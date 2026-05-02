@@ -17,6 +17,7 @@ import android.os.IBinder
 import android.util.Log
 import io.github.abcsds.rrstreamer.ble.HeartRateClient
 import io.github.abcsds.rrstreamer.ble.HeartRateMeasurement
+import io.github.abcsds.rrstreamer.ble.IntervalKind
 import io.github.abcsds.rrstreamer.lsl.LslHeartRateStreamer
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -26,16 +27,21 @@ import kotlinx.coroutines.flow.update
 /**
  * Foreground service that owns the GATT connection and the LSL outlets.
  * Started with EXTRA_DEVICE_ADDRESS + EXTRA_DEVICE_NAME; stopped with [stop].
+ *
+ * The interval kind (RR vs PP) is decided by [HeartRateClient] on the first
+ * BLE notification, not at service start. We therefore defer constructing the
+ * LSL streamer until the first sample arrives, so the second outlet ships
+ * with the right name (`RR <name>` vs `PP <name>`) from the very first push.
  */
 class HeartRateService : Service() {
 
     private val binder = LocalBinder()
     private var client: HeartRateClient? = null
     private var streamer: LslHeartRateStreamer? = null
+    private var sanitisedDeviceName: String = "device"
     // LSL announces over multicast. Without an active multicast lock, modern
     // Android Wi-Fi stacks drop incoming multicast packets when the screen is
-    // off, so a fresh `pylsl resolve_streams` from another machine times out
-    // even though TCP unicast (re-)connects work fine.
+    // off, so a fresh `pylsl resolve_streams` from another machine times out.
     private var multicastLock: WifiManager.MulticastLock? = null
 
     private val _state = MutableStateFlow<StreamingState>(StreamingState.Idle)
@@ -51,7 +57,6 @@ class HeartRateService : Service() {
         super.onCreate()
         ensureNotificationChannel()
         acquireMulticastLock()
-        // Always promote to foreground BEFORE doing BLE work so the OS lets us run.
         startForeground(NOTIF_ID, buildNotification("Starting…"))
     }
 
@@ -90,17 +95,7 @@ class HeartRateService : Service() {
         val bm = getSystemService(Context.BLUETOOTH_SERVICE) as BluetoothManager
         val device: BluetoothDevice = bm.adapter.getRemoteDevice(address)
 
-        // Sanitise the device name for use as part of LSL stream/source ids
-        val sanitised = name.ifBlank { "device" }
-        val outlets = try {
-            LslHeartRateStreamer(sanitised)
-        } catch (e: Throwable) {
-            Log.e(TAG, "Failed to start LSL outlets: $e", e)
-            _state.value = StreamingState.Error(e.message ?: "LSL init failed")
-            stopSelf(); return START_NOT_STICKY
-        }
-        streamer = outlets
-
+        sanitisedDeviceName = name.ifBlank { "device" }
         _state.value = StreamingState.Connecting(name)
         updateNotification("Connecting to $name…")
 
@@ -112,13 +107,10 @@ class HeartRateService : Service() {
                 Log.d(TAG, "BLE state -> $s")
                 when (s) {
                     HeartRateClient.State.Subscribed -> {
-                        _state.value = StreamingState.Streaming(
-                            deviceName = name,
-                            lastHr = null,
-                            lastRr = null,
-                            startedAtMs = System.currentTimeMillis(),
-                        )
-                        updateNotification("Streaming from $name")
+                        // We're subscribed — but the protocol kind isn't known
+                        // until the first sample arrives. Stay in Connecting
+                        // visually; transition to Streaming on first sample.
+                        updateNotification("Listening to $name…")
                     }
                     HeartRateClient.State.Disconnected -> {
                         _state.value = StreamingState.Disconnected(name)
@@ -138,48 +130,74 @@ class HeartRateService : Service() {
     }
 
     private fun handleSample(m: HeartRateMeasurement) {
-        val s = streamer ?: return
+        // Lazy-construct the streamer on the first sample, now that we know the kind.
+        var s = streamer
+        if (s == null) {
+            s = try {
+                LslHeartRateStreamer(sanitisedDeviceName, m.intervalKind)
+            } catch (e: Throwable) {
+                Log.e(TAG, "Failed to start LSL outlets: $e", e)
+                _state.value = StreamingState.Error(e.message ?: "LSL init failed")
+                return
+            }
+            streamer = s
+            // Promote the state to Streaming with the detected kind. This is the
+            // first time the UI learns whether to render "RR" or "PP" labels.
+            _state.update { current ->
+                if (current is StreamingState.Streaming) current
+                else StreamingState.Streaming(
+                    deviceName = (current as? StreamingState.Connecting)?.deviceName
+                        ?: sanitisedDeviceName,
+                    intervalKind = m.intervalKind,
+                    lastHr = null,
+                    lastInterval = null,
+                    startedAtMs = System.currentTimeMillis(),
+                )
+            }
+            updateNotification("$sanitisedDeviceName · streaming ${m.intervalKind.label}")
+        }
+
         s.pushHr(m.heartRateBpm)
-        // RR intervals are pushed to LSL as **milliseconds** (rounded int).
-        // Conversion happens in HeartRateParser, so what arrives here is already ms.
-        m.rrIntervalsMs.forEach { s.pushRr(it) }
-        // Atomic update — handleSample runs on the GATT binder thread, and stop()/state
-        // transitions can land on other threads, so a plain read-modify-write would
-        // silently drop samples or clobber a Disconnected transition.
+        m.intervalsMs.forEach { s.pushInterval(it) }
+
+        // Atomic update — handleSample runs on the GATT binder thread, and stop()
+        // / state transitions can land on other threads, so a plain
+        // read-modify-write would silently drop samples or clobber a Disconnected
+        // transition.
         var deviceName: String? = null
         _state.update { current ->
             if (current is StreamingState.Streaming) {
                 deviceName = current.deviceName
                 val newHrHistory = (current.hrHistory + m.heartRateBpm).takeLast(HR_HISTORY_CAP)
-                val newRrHistory = (current.rrHistory + m.rrIntervalsMs)
-                    .takeLast(RR_HISTORY_CAP)
+                val newIntervalHistory = (current.intervalHistory + m.intervalsMs)
+                    .takeLast(INTERVAL_HISTORY_CAP)
                 current.copy(
                     lastHr = m.heartRateBpm,
-                    lastRr = m.rrIntervalsMs.lastOrNull() ?: current.lastRr,
+                    lastInterval = m.intervalsMs.lastOrNull() ?: current.lastInterval,
                     samples = current.samples + 1,
                     hrHistory = newHrHistory,
-                    rrHistory = newRrHistory,
-                    rmssdMs = computeRmssdMs(newRrHistory),
+                    intervalHistory = newIntervalHistory,
+                    rmssdMs = computeRmssdMs(newIntervalHistory),
                 )
             } else current
         }
         deviceName?.let { updateNotification("$it · ${m.heartRateBpm} bpm") }
-        Log.d(TAG, "HR=${m.heartRateBpm} RR=${m.rrIntervalsMs}ms")
+        Log.d(TAG, "HR=${m.heartRateBpm} ${m.intervalKind.label}=${m.intervalsMs}ms")
     }
 
     /**
-     * Root Mean Square of Successive RR-interval Differences, in milliseconds.
-     * A standard short-term HRV indicator. Returns null until at least 5 RR
-     * samples have accumulated to keep the readout from twitching wildly.
+     * Root Mean Square of Successive Interval Differences, in milliseconds.
+     * Computed from RR or PP regardless of source — for PP it's an
+     * approximation, indicated in the UI with a `≈` prefix.
      */
-    private fun computeRmssdMs(rrMs: List<Int>): Int? {
-        val window = rrMs.takeLast(RMSSD_WINDOW)
+    private fun computeRmssdMs(intervalsMs: List<Int>): Int? {
+        val window = intervalsMs.takeLast(RMSSD_WINDOW)
         if (window.size < 5) return null
         var sumSq = 0.0
         var n = 0
         for (i in 1 until window.size) {
-            val diffMs = (window[i] - window[i - 1]).toDouble()
-            sumSq += diffMs * diffMs
+            val d = (window[i] - window[i - 1]).toDouble()
+            sumSq += d * d
             n += 1
         }
         return kotlin.math.sqrt(sumSq / n).toInt()
@@ -242,11 +260,12 @@ class HeartRateService : Service() {
         private const val CHANNEL_ID = "rr_streaming"
         private const val NOTIF_ID = 1
 
-        // Rolling-buffer caps. HR is for the inline sparkline (one sample / sec from
-        // the H10), RR is for the 100-beat graph + RMSSD window.
-        const val HR_HISTORY_CAP = 60
-        const val RR_HISTORY_CAP = 100
-        const val RMSSD_WINDOW  = 30
+        // Rolling-buffer caps. HR is for the inline sparkline (one sample / sec
+        // from most bands); INTERVAL is for the 100-beat graph + RMSSD window
+        // and applies to both RR and PP sources.
+        const val HR_HISTORY_CAP       = 60
+        const val INTERVAL_HISTORY_CAP = 100
+        const val RMSSD_WINDOW         = 30
 
         const val EXTRA_DEVICE_ADDRESS = "device_address"
         const val EXTRA_DEVICE_NAME = "device_name"
@@ -265,12 +284,13 @@ sealed interface StreamingState {
     data class Connecting(val deviceName: String) : StreamingState
     data class Streaming(
         val deviceName: String,
+        val intervalKind: IntervalKind,
         val lastHr: Int?,
-        val lastRr: Int?,
+        val lastInterval: Int?,
         val samples: Int = 0,
         val startedAtMs: Long = 0L,
         val hrHistory: List<Int> = emptyList(),
-        val rrHistory: List<Int> = emptyList(),
+        val intervalHistory: List<Int> = emptyList(),
         val rmssdMs: Int? = null,
     ) : StreamingState
     data class Disconnected(val deviceName: String) : StreamingState

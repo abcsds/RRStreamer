@@ -4,7 +4,6 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
-import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
@@ -16,7 +15,6 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.Favorite
 import androidx.compose.material.icons.outlined.Stop
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
@@ -35,12 +33,12 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
-import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import io.github.abcsds.rrstreamer.HeartRateService
 import io.github.abcsds.rrstreamer.StreamingState
+import io.github.abcsds.rrstreamer.ble.IntervalKind
 import kotlinx.coroutines.delay
 
 @Composable
@@ -50,12 +48,16 @@ fun StreamingScreen(
     modifier: Modifier = Modifier,
 ) {
     val deviceLabel = when (state) {
-        is StreamingState.Streaming   -> state.deviceName
-        is StreamingState.Connecting  -> state.deviceName
+        is StreamingState.Streaming  -> state.deviceName
+        is StreamingState.Connecting -> state.deviceName
         else -> "device"
     }
     val isConnecting = state is StreamingState.Connecting
     val streaming = state as? StreamingState.Streaming
+    // Default the visible label to RR until the first sample tells us otherwise;
+    // most bands take this path, and the only mismatch is a brief sub-second
+    // window before the first PPI frame on a Verity Sense.
+    val kind: IntervalKind = streaming?.intervalKind ?: IntervalKind.RR
 
     Column(
         modifier = modifier
@@ -93,24 +95,31 @@ fun StreamingScreen(
         // ── Hero HR card ────────────────────────────────────────
         HeroCard(state = streaming, isConnecting = isConnecting)
 
-        // ── RR + RMSSD row ──────────────────────────────────────
+        // ── Interval (RR or PP) + RMSSD row ─────────────────────
         Row(
             modifier = Modifier.fillMaxWidth(),
             horizontalArrangement = Arrangement.spacedBy(10.dp),
         ) {
             StatCard(
-                label = "RR",
+                label = kind.label,
                 labelColor = Tokens.Rr,
-                value = streaming?.lastRr?.toString() ?: "—",
+                value = streaming?.lastInterval?.toString() ?: "—",
                 unit  = "ms · last beat",
                 glow  = Tokens.RrGlow,
                 modifier = Modifier.weight(1f),
             )
+            // RMSSD is only "true" when computed from RR. With PP we still
+            // compute it (same algorithm) but flag it as approximate via the
+            // ≈ prefix and a clarifying unit string.
+            val approx = kind == IntervalKind.PP
             StatCard(
-                label = "RMSSD",
+                label = if (approx) "RMSSD ≈" else "RMSSD",
                 labelColor = Tokens.TextSoft,
                 value = streaming?.rmssdMs?.toString() ?: "—",
-                unit  = "ms · last ${io.github.abcsds.rrstreamer.HeartRateService.RMSSD_WINDOW} beats",
+                unit  = if (approx)
+                    "ms · approx · last ${HeartRateService.RMSSD_WINDOW} beats"
+                else
+                    "ms · last ${HeartRateService.RMSSD_WINDOW} beats",
                 modifier = Modifier.weight(1f),
             )
         }
@@ -131,15 +140,18 @@ fun StreamingScreen(
         }
         MetaStrip(
             rows = listOf(
-                "STREAM"  to "HR ${truncate(deviceLabel, 14)}",
+                "STREAM"  to "${kind.lslTag} ${truncate(deviceLabel, 14)}",
                 "UPTIME"  to uptimeText.value,
                 "SAMPLES" to (streaming?.samples?.toString() ?: "0"),
-                "BUFFER"  to "${streaming?.rrHistory?.size ?: 0} / ${io.github.abcsds.rrstreamer.HeartRateService.RR_HISTORY_CAP}",
+                "BUFFER"  to "${streaming?.intervalHistory?.size ?: 0} / ${HeartRateService.INTERVAL_HISTORY_CAP}",
             ),
         )
 
-        // ── RR · last 100 beats ────────────────────────────────
-        RrHistoryCard(rrMs = streaming?.rrHistory ?: emptyList())
+        // ── Interval graph (last 100 beats) ─────────────────────
+        IntervalHistoryCard(
+            kind = kind,
+            intervalsMs = streaming?.intervalHistory ?: emptyList(),
+        )
 
         Spacer(Modifier.height(20.dp))
 
@@ -190,19 +202,10 @@ private fun HeroCard(
                 )
             ),
     ) {
-        // outline
-        Box(
-            modifier = Modifier
-                .matchParentSize()
-                .padding(0.dp)
-                .clip(RoundedCornerShape(22.dp))
-                .background(Color.Transparent)
-        )
         Column(
             modifier = Modifier.padding(horizontal = 20.dp, vertical = 18.dp),
             verticalArrangement = Arrangement.spacedBy(8.dp),
         ) {
-            // Label row
             Row(
                 modifier = Modifier.fillMaxWidth(),
                 horizontalArrangement = Arrangement.SpaceBetween,
@@ -219,7 +222,6 @@ private fun HeroCard(
                 Text(avgText, style = MonoTabularLabel.copy(color = Tokens.TextFaint, fontSize = 10.sp))
             }
 
-            // Big numeral row
             Row(
                 verticalAlignment = Alignment.CenterVertically,
                 horizontalArrangement = Arrangement.spacedBy(14.dp),
@@ -260,7 +262,6 @@ private fun HeroCard(
                 }
             }
 
-            // Sparkline
             Spacer(Modifier.height(6.dp))
             Sparkline(
                 values = state?.hrHistory ?: emptyList(),
@@ -273,7 +274,7 @@ private fun HeroCard(
                 modifier = Modifier.fillMaxWidth().padding(top = 4.dp),
                 horizontalArrangement = Arrangement.SpaceBetween,
             ) {
-                Text("−${io.github.abcsds.rrstreamer.HeartRateService.HR_HISTORY_CAP}s",
+                Text("−${HeartRateService.HR_HISTORY_CAP}s",
                     style = MonoTabularLabel.copy(color = Tokens.TextFaint, fontSize = 9.5.sp))
                 Text("now",
                     style = MonoTabularLabel.copy(color = Tokens.TextFaint, fontSize = 9.5.sp))
@@ -328,15 +329,22 @@ private fun truncate(s: String, max: Int): String =
     if (s.length <= max) s else s.take(max - 1) + "…"
 
 /**
- * Rolling card for the last [HeartRateService.RR_HISTORY_CAP] R-R intervals.
- * Shows min / mean / max in millisecond strip + a teal sparkline.
+ * Rolling card for the last [HeartRateService.INTERVAL_HISTORY_CAP] beat-to-beat
+ * intervals. Shows MIN / MEAN / MAX in milliseconds + a sparkline.
+ *
+ * Title swaps "RR" ↔ "PP" based on [kind]; we add a small "(approx)" suffix
+ * when the source is PP so a viewer of a screenshot doesn't mistake it for
+ * ECG-derived RR data.
  */
 @Composable
-private fun RrHistoryCard(rrMs: List<Int>) {
-    val cap = io.github.abcsds.rrstreamer.HeartRateService.RR_HISTORY_CAP
-    val min = rrMs.minOrNull()
-    val max = rrMs.maxOrNull()
-    val avg = if (rrMs.isNotEmpty()) rrMs.average().toInt() else null
+private fun IntervalHistoryCard(
+    kind: IntervalKind,
+    intervalsMs: List<Int>,
+) {
+    val cap = HeartRateService.INTERVAL_HISTORY_CAP
+    val min = intervalsMs.minOrNull()
+    val max = intervalsMs.maxOrNull()
+    val avg = if (intervalsMs.isNotEmpty()) intervalsMs.average().toInt() else null
 
     Box(
         modifier = Modifier
@@ -355,7 +363,6 @@ private fun RrHistoryCard(rrMs: List<Int>) {
             modifier = Modifier.padding(horizontal = 18.dp, vertical = 14.dp),
             verticalArrangement = Arrangement.spacedBy(10.dp),
         ) {
-            // Header row: title left, sample count right
             Row(
                 modifier = Modifier.fillMaxWidth(),
                 horizontalArrangement = Arrangement.SpaceBetween,
@@ -364,24 +371,27 @@ private fun RrHistoryCard(rrMs: List<Int>) {
                 Row(verticalAlignment = Alignment.CenterVertically,
                     horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                     Text(
-                        "RR",
+                        kind.label,
                         style = MonoTabularLabel.copy(color = Tokens.Rr, fontSize = 11.sp),
                         fontWeight = FontWeight.Medium,
                     )
+                    val tail = if (kind == IntervalKind.PP)
+                        "· LAST $cap PEAKS · APPROX"
+                    else
+                        "· LAST $cap BEATS"
                     Text(
-                        "· LAST $cap BEATS",
+                        tail,
                         style = MonoTabularLabel.copy(color = Tokens.TextFaint, fontSize = 10.sp),
                     )
                 }
                 Text(
-                    "${rrMs.size} / $cap",
+                    "${intervalsMs.size} / $cap",
                     style = MonoTabularLabel.copy(color = Tokens.TextFaint, fontSize = 10.sp),
                 )
             }
 
-            // The graph itself
             Sparkline(
-                values = rrMs,
+                values = intervalsMs,
                 color = Tokens.Rr,
                 strokeWidth = 2.0f,
                 modifier = Modifier
@@ -389,22 +399,21 @@ private fun RrHistoryCard(rrMs: List<Int>) {
                     .height(96.dp),
             )
 
-            // Min / Mean / Max strip in mono
             Row(
                 modifier = Modifier.fillMaxWidth(),
                 horizontalArrangement = Arrangement.SpaceBetween,
             ) {
-                RrStat(label = "MIN",  value = min?.let { "${it}ms" } ?: "—")
-                RrStat(label = "MEAN", value = avg?.let { "${it}ms" } ?: "—",
+                IntervalStat(label = "MIN",  value = min?.let { "${it}ms" } ?: "—")
+                IntervalStat(label = "MEAN", value = avg?.let { "${it}ms" } ?: "—",
                     valueColor = Tokens.Text)
-                RrStat(label = "MAX",  value = max?.let { "${it}ms" } ?: "—")
+                IntervalStat(label = "MAX",  value = max?.let { "${it}ms" } ?: "—")
             }
         }
     }
 }
 
 @Composable
-private fun RrStat(label: String, value: String, valueColor: Color = Tokens.RrSoft) {
+private fun IntervalStat(label: String, value: String, valueColor: Color = Tokens.RrSoft) {
     Column {
         Text(label, style = MonoTabularLabel.copy(color = Tokens.TextFaint, fontSize = 9.5.sp))
         Spacer(Modifier.height(3.dp))

@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">RRStreamer</string>
+    <string name="notif_channel_name">Heart Rate Streaming</string>
+    <string name="notif_channel_desc">Active LSL stream from a paired heart rate band</string>
+</resources>

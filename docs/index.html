@@ -1,0 +1,1527 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>RRStreamer — BLE Heart Rate to Lab Streaming Layer</title>
+<meta name="description" content="An Android client that streams Polar H10 heart-rate and R-R interval data to a Lab Streaming Layer marker outlet.">
+
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Fira+Code:wght@400;500;600&family=Fira+Sans:wght@300;400;500;600;700&display=swap">
+
+<style>
+  :root {
+    /* Match the app's design tokens (io.github.abcsds.rrstreamer.ui.Tokens) */
+    --bg:           #050810;
+    --surface:      #0d1320;
+    --surface-2:    #131a2a;
+    --rule:         #1b2336;
+    --rule-soft:    #11172a;
+
+    --text:         #e8edf5;
+    --text-soft:    #8a93a8;
+    --text-faint:   #4f566c;
+
+    --hr:           #f43f5e;
+    --hr-soft:      #fb7185;
+    --hr-glow:      rgba(244, 63, 94, 0.35);
+    --rr:           #2dd4bf;
+    --rr-soft:      #5eead4;
+    --rr-glow:      rgba(45, 212, 191, 0.30);
+    --signal:       #34d399;
+    --copper:       #cf915e;
+
+    --max-w: 78rem;
+    --gutter: clamp(1.25rem, 3.5vw, 3rem);
+  }
+
+  * { box-sizing: border-box; }
+  html { scroll-behavior: smooth; }
+  html, body { margin: 0; padding: 0; }
+
+  body {
+    background: var(--bg);
+    color: var(--text);
+    font-family: "Fira Sans", system-ui, -apple-system, sans-serif;
+    font-size: 16px;
+    line-height: 1.6;
+    -webkit-font-smoothing: antialiased;
+    background-image:
+      radial-gradient(1200px 700px at 80% -10%, rgba(244,63,94,0.06), transparent 60%),
+      radial-gradient(900px 600px at -10% 30%, rgba(45,212,191,0.05), transparent 70%),
+      radial-gradient(rgba(255,255,255,0.012) 1px, transparent 1px);
+    background-size: auto, auto, 3px 3px;
+  }
+
+  /* Layout */
+  .container {
+    max-width: var(--max-w);
+    margin: 0 auto;
+    padding-inline: var(--gutter);
+  }
+
+  .grid {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr);
+    gap: 2rem 3rem;
+  }
+  @media (min-width: 60rem) {
+    .grid {
+      grid-template-columns: minmax(0, 7fr) minmax(0, 3fr);
+    }
+  }
+
+  /* Type */
+  h1, h2, h3 { font-family: "Fira Sans", sans-serif; font-weight: 600; color: var(--text); }
+  h1 {
+    font-size: clamp(2.5rem, 7vw, 4.75rem);
+    line-height: 1.0;
+    letter-spacing: -0.04em;
+    margin: 0;
+    font-weight: 700;
+  }
+  h1 .accent { color: var(--hr); }
+  h1 .accent-rr { color: var(--rr); }
+  h2 {
+    font-size: clamp(1.6rem, 3vw, 2.25rem);
+    line-height: 1.1;
+    letter-spacing: -0.02em;
+    margin: 0 0 1rem;
+  }
+  h3 {
+    font-size: 1.05rem;
+    margin: 0 0 0.5rem;
+    letter-spacing: -0.005em;
+  }
+  p { margin: 0 0 1rem; color: var(--text-soft); }
+  p:last-child { margin-bottom: 0; }
+  strong { color: var(--text); font-weight: 600; }
+  a {
+    color: var(--signal);
+    text-decoration: none;
+    border-bottom: 1px solid color-mix(in srgb, var(--signal) 25%, transparent);
+    transition: border-color 120ms ease;
+  }
+  a:hover { border-bottom-color: var(--signal); }
+
+  code, pre, .mono {
+    font-family: "Fira Code", ui-monospace, monospace;
+    font-feature-settings: "tnum" 1;
+  }
+  code {
+    font-size: 0.85em;
+    color: var(--signal);
+    background: rgba(52, 211, 153, 0.07);
+    padding: 0.08em 0.36em;
+    border-radius: 3px;
+    border: 1px solid rgba(52, 211, 153, 0.15);
+  }
+  pre {
+    background: var(--surface);
+    border: 1px solid var(--rule);
+    border-left: 2px solid var(--signal);
+    color: var(--text);
+    padding: 1rem 1.2rem;
+    overflow-x: auto;
+    font-size: 0.85rem;
+    line-height: 1.65;
+    margin: 0 0 1.25rem;
+    border-radius: 0 8px 8px 0;
+  }
+  pre code { background: none; border: none; padding: 0; color: inherit; font-size: 1em; }
+
+  /* Section numbering */
+  .pre-numeral {
+    display: flex;
+    align-items: baseline;
+    gap: 1.25rem;
+    color: var(--text-faint);
+    font-family: "Fira Code", monospace;
+    font-size: 0.74rem;
+    letter-spacing: 0.22em;
+    text-transform: uppercase;
+    margin-bottom: 0.5rem;
+  }
+  .pre-numeral .index { color: var(--hr); font-weight: 600; }
+  .pre-numeral .rule {
+    flex: 1;
+    height: 1px;
+    background: linear-gradient(to right, var(--rule), transparent);
+  }
+
+  .marg {
+    color: var(--text-soft);
+    font-family: "Fira Code", monospace;
+    font-size: 0.72rem;
+    line-height: 1.6;
+    letter-spacing: 0.02em;
+    border-left: 1px solid color-mix(in srgb, var(--copper) 35%, transparent);
+    padding-left: 0.95rem;
+  }
+  .marg .label {
+    display: block;
+    color: var(--copper);
+    text-transform: uppercase;
+    letter-spacing: 0.18em;
+    font-size: 0.66rem;
+    margin-bottom: 0.5rem;
+  }
+
+  /* Brand mark — exact replica of the app's BrandMark composable */
+  .brand-mark {
+    width: 28px; height: 28px;
+    border: 1.5px solid var(--hr);
+    border-radius: 8px;
+    display: inline-grid;
+    place-items: center;
+    color: var(--hr);
+  }
+  .brand-mark svg { display: block; }
+
+  /* Hero */
+  .hero {
+    position: relative;
+    padding: clamp(2.5rem, 6vw, 4.5rem) 0 clamp(3rem, 6vw, 5rem);
+    overflow: hidden;
+    border-bottom: 1px solid var(--rule);
+  }
+  .hero .topline {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 0.85rem 2rem;
+    color: var(--text-faint);
+    font-family: "Fira Code", monospace;
+    font-size: 0.72rem;
+    text-transform: uppercase;
+    letter-spacing: 0.22em;
+    margin-bottom: clamp(2rem, 4vw, 3rem);
+  }
+  .hero .topline .brand-text { color: var(--text); font-weight: 500; letter-spacing: 0.7px; }
+
+  .hero-grid {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr);
+    gap: clamp(2.5rem, 5vw, 4rem);
+    align-items: center;
+  }
+  @media (min-width: 60rem) {
+    .hero-grid { grid-template-columns: minmax(0, 1fr) minmax(0, 432px); }
+  }
+
+  .lede {
+    margin-top: clamp(1.25rem, 2.5vw, 2rem);
+    max-width: 36rem;
+    font-size: clamp(1rem, 1.4vw, 1.2rem);
+    line-height: 1.55;
+    color: var(--text-soft);
+  }
+  .lede strong { color: var(--text); }
+
+  /* ---------- Phone frame & app surfaces ---------- */
+  .phone {
+    width: 100%;
+    max-width: 412px;
+    aspect-ratio: 412 / 892;
+    background: var(--bg);
+    border-radius: 36px;
+    border: 1px solid #1a1f30;
+    box-shadow:
+      inset 0 0 0 1px rgba(255,255,255,0.025),
+      0 30px 80px rgba(0,0,0,0.7);
+    overflow: hidden;
+    position: relative;
+    color: var(--text);
+    margin-inline: auto;
+  }
+  .phone::before {
+    content: "";
+    position: absolute; inset: 0;
+    background:
+      radial-gradient(800px 400px at 50% -10%, rgba(244,63,94,0.06), transparent 60%),
+      radial-gradient(600px 500px at 100% 100%, rgba(45,212,191,0.05), transparent 60%);
+    pointer-events: none;
+  }
+  .phone::after {
+    content: "";
+    position: absolute; inset: 0;
+    background-image: radial-gradient(rgba(255,255,255,0.012) 1px, transparent 1px);
+    background-size: 3px 3px;
+    pointer-events: none;
+  }
+
+  .ph-status {
+    display: flex; align-items: center; justify-content: space-between;
+    padding: 12px 22px 6px;
+    font-family: "Fira Code", monospace;
+    font-size: 11px;
+    color: var(--text-soft);
+    font-feature-settings: "tnum" 1;
+  }
+
+  .ph-header {
+    padding: 4px 22px 14px;
+    display: flex; align-items: center; gap: 10px;
+  }
+  .ph-header .text {
+    font-family: "Fira Code", monospace;
+    font-size: 12px;
+    letter-spacing: 0.06em;
+    color: var(--text);
+  }
+  .ph-header .sep { color: var(--text-faint); margin: 0 6px; }
+  .ph-header .device { color: var(--text-soft); font-size: 10.5px; }
+
+  .ph-pulse {
+    margin: 2px 22px 14px;
+    display: flex; align-items: center; gap: 10px;
+    font-family: "Fira Code", monospace;
+    font-size: 10.5px;
+    color: var(--signal);
+    letter-spacing: 0.18em;
+    text-transform: uppercase;
+  }
+  .ph-pulse-dot {
+    width: 7px; height: 7px;
+    border-radius: 50%;
+    background: var(--signal);
+    box-shadow: 0 0 10px var(--signal);
+    animation: pulse 1.05s ease-in-out infinite;
+  }
+  @keyframes pulse {
+    0%, 100% { opacity: 0.35; transform: scale(0.85); }
+    25% { opacity: 1; transform: scale(1.05); }
+  }
+
+  /* Hero HR card */
+  .ph-hero {
+    margin: 0 22px 12px;
+    padding: 18px 18px 14px;
+    background: linear-gradient(180deg, var(--surface) 0%, rgba(13,19,32,0.4) 100%);
+    border-radius: 22px;
+    position: relative;
+    overflow: hidden;
+  }
+  .ph-hero::before {
+    content: ""; position: absolute; inset: 0;
+    background: radial-gradient(420px 220px at 92% 8%, var(--hr-glow), transparent 60%);
+    pointer-events: none;
+  }
+  .ph-hero .head {
+    display: flex; justify-content: space-between; align-items: baseline;
+    font-family: "Fira Code", monospace;
+    font-size: 10.5px;
+    color: var(--text-soft);
+    letter-spacing: 0.22em;
+    text-transform: uppercase;
+    margin-bottom: 6px;
+  }
+  .ph-hero .head .kind { color: var(--hr); font-weight: 500; }
+  .ph-hero .head .meta { color: var(--text-faint); font-size: 9.5px; }
+  .ph-hero .num-row {
+    display: flex; align-items: center; gap: 12px;
+  }
+  .ph-hero .heart {
+    width: 26px; height: 26px;
+    color: var(--hr);
+    filter: drop-shadow(0 0 8px var(--hr-glow));
+    animation: beat 0.86s ease-in-out infinite;
+  }
+  @keyframes beat {
+    0%, 60%, 100% { transform: scale(1); }
+    20% { transform: scale(1.18); }
+    40% { transform: scale(0.94); }
+  }
+  .ph-hero .num {
+    font-family: "Fira Code", monospace;
+    font-size: 96px;
+    font-weight: 500;
+    line-height: 0.95;
+    color: var(--text);
+    font-feature-settings: "tnum" 1;
+    letter-spacing: -0.04em;
+    text-shadow: 0 0 22px var(--hr-glow);
+  }
+  .ph-hero .unit {
+    font-family: "Fira Code", monospace;
+    font-size: 12px;
+    font-weight: 500;
+    color: var(--text-soft);
+    letter-spacing: 0.16em;
+    text-transform: uppercase;
+    margin-left: 4px;
+  }
+
+  .ph-hero .spark {
+    margin-top: 12px;
+  }
+  .ph-hero .spark svg { width: 100%; height: 56px; display: block; overflow: visible; }
+  .ph-hero .spark .axis {
+    display: flex; justify-content: space-between;
+    margin-top: 4px;
+    font-family: "Fira Code", monospace;
+    font-size: 9.5px;
+    color: var(--text-faint);
+    letter-spacing: 0.1em;
+  }
+
+  /* RR / RMSSD row */
+  .ph-stats {
+    margin: 0 22px 12px;
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 10px;
+  }
+  .ph-stat {
+    background: var(--surface);
+    border-radius: 18px;
+    padding: 12px 16px;
+    position: relative;
+    overflow: hidden;
+  }
+  .ph-stat.rr::before {
+    content: ""; position: absolute; inset: 0;
+    background: radial-gradient(280px 160px at 95% 95%, var(--rr-glow), transparent 60%);
+    opacity: 0.5;
+    pointer-events: none;
+  }
+  .ph-stat .label {
+    font-family: "Fira Code", monospace;
+    font-size: 10px;
+    color: var(--text-soft);
+    letter-spacing: 0.22em;
+    text-transform: uppercase;
+  }
+  .ph-stat.rr .label { color: var(--rr); font-weight: 500; }
+  .ph-stat .num {
+    font-family: "Fira Code", monospace;
+    font-size: 28px;
+    font-weight: 500;
+    color: var(--text);
+    font-feature-settings: "tnum" 1;
+    line-height: 1.15;
+    letter-spacing: -0.02em;
+    margin-top: 2px;
+  }
+  .ph-stat .unit {
+    font-family: "Fira Sans", sans-serif;
+    font-size: 10.5px;
+    color: var(--text-faint);
+    margin-top: 1px;
+  }
+
+  /* Metadata strip */
+  .ph-meta {
+    margin: 0 22px 12px;
+    padding: 12px 16px;
+    background: rgba(255,255,255,0.012);
+    border-radius: 14px;
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 6px 16px;
+    font-family: "Fira Code", monospace;
+    font-size: 10px;
+    color: var(--text-faint);
+  }
+  .ph-meta .row { display: flex; justify-content: space-between; gap: 8px; }
+  .ph-meta .row span:last-child { color: var(--text); }
+
+  /* RR-100 history card */
+  .ph-rr100 {
+    margin: 0 22px 12px;
+    padding: 12px 16px;
+    background: var(--surface);
+    border-radius: 18px;
+    position: relative;
+    overflow: hidden;
+  }
+  .ph-rr100::before {
+    content: ""; position: absolute; inset: 0;
+    background: radial-gradient(700px 200px at 92% 8%, var(--rr-glow), transparent 60%);
+    pointer-events: none;
+  }
+  .ph-rr100 .head {
+    display: flex; justify-content: space-between; align-items: center;
+    font-family: "Fira Code", monospace;
+    font-size: 10px;
+    color: var(--text-faint);
+    letter-spacing: 0.18em;
+    text-transform: uppercase;
+    margin-bottom: 6px;
+  }
+  .ph-rr100 .head .label-rr { color: var(--rr); font-weight: 500; margin-right: 6px; }
+  .ph-rr100 svg { width: 100%; height: 86px; display: block; overflow: visible; margin-top: 4px; }
+  .ph-rr100 .triplet {
+    display: flex; justify-content: space-between;
+    margin-top: 8px;
+  }
+  .ph-rr100 .triplet > div .label {
+    font-family: "Fira Code", monospace;
+    font-size: 9.5px;
+    color: var(--text-faint);
+    letter-spacing: 0.18em;
+    text-transform: uppercase;
+  }
+  .ph-rr100 .triplet > div .val {
+    font-family: "Fira Code", monospace;
+    font-size: 14px;
+    color: var(--rr-soft);
+    font-weight: 500;
+    margin-top: 2px;
+  }
+  .ph-rr100 .triplet > div.mean .val { color: var(--text); }
+
+  /* Stop button */
+  .ph-stop {
+    margin: 8px 22px 18px;
+    padding: 12px;
+    border: 1px solid var(--rule);
+    border-radius: 16px;
+    text-align: center;
+    color: var(--hr-soft);
+    font-family: "Fira Sans", sans-serif;
+    font-size: 13px;
+    font-weight: 500;
+    letter-spacing: 0.04em;
+    cursor: default;
+  }
+
+  /* Sections */
+  section {
+    padding: clamp(3rem, 6vw, 5rem) 0;
+    border-bottom: 1px solid var(--rule);
+  }
+  section:last-of-type { border-bottom: none; }
+
+  /* Spec table */
+  table.spec {
+    width: 100%;
+    border-collapse: collapse;
+    font-family: "Fira Code", monospace;
+    font-size: 0.82rem;
+    margin-top: 1.25rem;
+    margin-bottom: 1rem;
+    color: var(--text);
+  }
+  table.spec th, table.spec td {
+    text-align: left;
+    padding: 0.75rem 1rem;
+    border-bottom: 1px solid var(--rule);
+    vertical-align: top;
+  }
+  table.spec thead th {
+    border-bottom: 1px solid var(--text-faint);
+    color: var(--text-faint);
+    text-transform: uppercase;
+    letter-spacing: 0.16em;
+    font-size: 0.66rem;
+    font-weight: 600;
+    padding-bottom: 0.55rem;
+  }
+  table.spec tbody tr:hover { background: rgba(45, 212, 191, 0.03); }
+  table.spec td.tag-hr { color: var(--hr); font-weight: 600; }
+  table.spec td.tag-rr { color: var(--rr); font-weight: 600; }
+  table.spec td .muted { color: var(--text-faint); }
+
+  /* Architecture diagram */
+  .arch {
+    margin: 1.5rem 0;
+    background: var(--surface);
+    border: 1px solid var(--rule);
+    padding: 1.5rem 1rem;
+    border-radius: 12px;
+  }
+  .arch svg { display: block; width: 100%; height: auto; }
+  .arch text {
+    font-family: "Fira Code", monospace;
+    font-size: 11px;
+    fill: var(--text);
+  }
+  .arch .lbl { fill: var(--text-faint); font-size: 9.5px; letter-spacing: 0.12em; text-transform: uppercase; }
+  .arch .box { fill: var(--surface-2); stroke: var(--rule); stroke-width: 1; }
+  .arch .box-accent { stroke: var(--hr); stroke-width: 1.4; }
+  .arch .box-signal { stroke: var(--rr); stroke-width: 1.4; }
+  .arch .arr { stroke: var(--text-faint); stroke-width: 1; fill: none; }
+  .arch .arr-active { stroke: var(--rr); stroke-width: 1.4; fill: none; }
+  .arch .arr-accent { stroke: var(--hr); stroke-width: 1.4; fill: none; }
+  .arch .head { fill: var(--text-faint); }
+  .arch .head-active { fill: var(--rr); }
+  .arch .head-accent { fill: var(--hr); }
+
+  /* Timeline */
+  .timeline { list-style: none; padding: 0; margin: 1.5rem 0 0; }
+  .timeline li {
+    display: grid;
+    grid-template-columns: 7rem 1fr;
+    gap: 1.5rem;
+    padding: 1rem 0 1.2rem;
+    border-bottom: 1px solid var(--rule-soft);
+  }
+  .timeline li:last-child { border-bottom: none; }
+  .timeline .when {
+    font-family: "Fira Code", monospace;
+    font-size: 0.74rem;
+    color: var(--hr);
+    letter-spacing: 0.1em;
+  }
+  .timeline .what h4 {
+    margin: 0 0 0.35rem;
+    font-family: "Fira Sans", sans-serif;
+    font-weight: 600;
+    font-size: 1rem;
+    color: var(--text);
+    letter-spacing: -0.005em;
+  }
+  .timeline .what p { font-size: 0.92rem; color: var(--text-soft); margin: 0; }
+  .timeline .what code { font-size: 0.78em; }
+
+  /* Verified config grid */
+  .hw {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(11rem, 1fr));
+    gap: 1.25rem;
+    margin-top: 1.25rem;
+  }
+  .hw-card {
+    padding: 1rem 1.15rem;
+    border: 1px solid var(--rule);
+    background: var(--surface);
+    border-radius: 12px;
+  }
+  .hw-card .key {
+    font-family: "Fira Code", monospace;
+    text-transform: uppercase;
+    letter-spacing: 0.18em;
+    font-size: 0.65rem;
+    color: var(--text-faint);
+  }
+  .hw-card .val {
+    font-family: "Fira Sans", sans-serif;
+    font-weight: 600;
+    font-size: 1.15rem;
+    color: var(--text);
+    margin-top: 0.4rem;
+    letter-spacing: -0.01em;
+  }
+  .hw-card .sub {
+    font-family: "Fira Code", monospace;
+    font-size: 0.72rem;
+    color: var(--text-soft);
+    margin-top: 0.3rem;
+  }
+
+  /* Screenshot showcase */
+  .showcase {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr);
+    gap: 2.5rem;
+    align-items: start;
+  }
+  @media (min-width: 60rem) {
+    .showcase { grid-template-columns: 1fr 1fr; gap: 3rem; }
+  }
+  .showcase .caption {
+    margin-top: 1rem;
+    font-family: "Fira Code", monospace;
+    font-size: 0.78rem;
+    color: var(--text-faint);
+    text-align: center;
+    letter-spacing: 0.04em;
+  }
+  .showcase .caption strong { color: var(--text); font-weight: 500; }
+
+  /* Footer */
+  footer {
+    padding: 2.25rem 0 2.75rem;
+    border-top: 1px solid var(--rule);
+    color: var(--text-faint);
+    font-family: "Fira Code", monospace;
+    font-size: 0.72rem;
+    letter-spacing: 0.12em;
+    text-transform: uppercase;
+    background: var(--surface);
+  }
+  footer .container {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 1.5rem;
+    justify-content: space-between;
+    align-items: baseline;
+  }
+  footer .commit { color: var(--signal); }
+
+  blockquote {
+    margin: 1.25rem 0;
+    padding: 0.4rem 1.25rem;
+    border-left: 2px solid var(--hr);
+    color: var(--text);
+    font-size: 1.05rem;
+    line-height: 1.5;
+  }
+  blockquote cite {
+    display: block;
+    margin-top: 0.5rem;
+    font-style: normal;
+    font-family: "Fira Code", monospace;
+    font-size: 0.72rem;
+    color: var(--text-faint);
+    letter-spacing: 0.14em;
+    text-transform: uppercase;
+  }
+
+  /* Scroll progress */
+  .scroll-progress {
+    position: fixed;
+    top: 0; left: 0;
+    height: 2px;
+    width: 0;
+    background: var(--hr);
+    z-index: 100;
+    transition: width 90ms linear;
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    .ph-pulse-dot { animation: none; opacity: 0.9; }
+    .ph-hero .heart { animation: none; }
+    html { scroll-behavior: auto; }
+  }
+</style>
+</head>
+<body>
+
+<div class="scroll-progress" id="progress"></div>
+
+<header class="hero">
+  <div class="container">
+
+    <div class="topline">
+      <span class="brand-mark" aria-hidden="true">
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor">
+          <path d="M12 18 C 7 14 3 11 3 7 C 3 4.5 5 3 7 3 C 9 3 10.5 4 12 6 C 13.5 4 15 3 17 3 C 19 3 21 4.5 21 7 C 21 11 17 14 12 18 Z"/>
+        </svg>
+      </span>
+      <span class="brand-text">RRSTREAMER</span>
+      <span>v0.1.0</span>
+      <span>Android · BLE · LSL</span>
+      <span>Any HR band · H10 tested</span>
+    </div>
+
+    <div class="hero-grid">
+      <div>
+        <h1>Stream your <span class="accent">heart</span><br>to the network.</h1>
+        <p class="lede">
+          RRStreamer is an Android client that scans for a BLE heart-rate
+          band, parses notifications per the BLE&nbsp;0x2A37 spec, and
+          republishes every beat — and every R-R interval, in
+          <strong>milliseconds</strong> — as <strong>Lab Streaming
+          Layer</strong> marker outlets. Your phone becomes a first-class
+          node in any LSL recording rig.
+        </p>
+      </div>
+
+      <!-- Phone mockup of the actual streaming screen -->
+      <div class="phone" aria-label="Streaming screen mockup">
+        <div class="ph-status">
+          <span>00:04</span>
+          <span>● ● ● 5G  100%</span>
+        </div>
+        <div class="ph-header">
+          <span class="brand-mark" aria-hidden="true">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor">
+              <path d="M12 18 C 7 14 3 11 3 7 C 3 4.5 5 3 7 3 C 9 3 10.5 4 12 6 C 13.5 4 15 3 17 3 C 19 3 21 4.5 21 7 C 21 11 17 14 12 18 Z"/>
+            </svg>
+          </span>
+          <span class="text">RRSTREAMER<span class="sep"> · </span><span class="device">POLAR H10 · D6B5C724</span></span>
+        </div>
+        <div class="ph-pulse">
+          <span class="ph-pulse-dot"></span>
+          <span>Streaming · LSL Markers</span>
+        </div>
+
+        <div class="ph-hero">
+          <div class="head">
+            <span class="kind">HR</span>
+            <span class="meta" id="hero-avg">AVG 69</span>
+          </div>
+          <div class="num-row">
+            <svg class="heart" viewBox="0 0 24 24" fill="currentColor">
+              <path d="M12 18 C 7 14 3 11 3 7 C 3 4.5 5 3 7 3 C 9 3 10.5 4 12 6 C 13.5 4 15 3 17 3 C 19 3 21 4.5 21 7 C 21 11 17 14 12 18 Z"/>
+            </svg>
+            <span class="num" id="hero-hr">71</span>
+            <span class="unit">BPM</span>
+          </div>
+
+          <div class="spark">
+            <svg viewBox="0 0 360 56" preserveAspectRatio="none" id="hero-spark-svg">
+              <defs>
+                <linearGradient id="hr-fill" x1="0" x2="0" y1="0" y2="1">
+                  <stop offset="0%" stop-color="#f43f5e" stop-opacity="0.30"/>
+                  <stop offset="100%" stop-color="#f43f5e" stop-opacity="0"/>
+                </linearGradient>
+              </defs>
+              <line x1="0" y1="14" x2="360" y2="14" stroke="#1b2336" stroke-width="1"/>
+              <line x1="0" y1="28" x2="360" y2="28" stroke="#11172a" stroke-width="1"/>
+              <line x1="0" y1="42" x2="360" y2="42" stroke="#1b2336" stroke-width="1"/>
+              <path id="hr-area" fill="url(#hr-fill)" d=""/>
+              <path id="hr-line" fill="none" stroke="#f43f5e" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" d=""/>
+              <circle id="hr-dot-glow" r="6" fill="#f43f5e" fill-opacity="0.3"/>
+              <circle id="hr-dot"      r="3" fill="#f43f5e"/>
+            </svg>
+            <div class="axis">
+              <span>−60s</span>
+              <span>now</span>
+            </div>
+          </div>
+        </div>
+
+        <div class="ph-stats">
+          <div class="ph-stat rr">
+            <div class="label">RR</div>
+            <div class="num" id="hero-rr">832</div>
+            <div class="unit">ms · last beat</div>
+          </div>
+          <div class="ph-stat">
+            <div class="label">RMSSD</div>
+            <div class="num" id="hero-rmssd">26</div>
+            <div class="unit">ms · last 30 beats</div>
+          </div>
+        </div>
+
+        <div class="ph-meta">
+          <div class="row"><span>STREAM</span><span>HR Polar H10 D…</span></div>
+          <div class="row"><span>UPTIME</span><span id="hero-uptime">00:11</span></div>
+          <div class="row"><span>SAMPLES</span><span id="hero-samples">11</span></div>
+          <div class="row"><span>BUFFER</span><span id="hero-buffer">11 / 100</span></div>
+        </div>
+
+        <div class="ph-rr100">
+          <div class="head">
+            <span><span class="label-rr">RR</span>· LAST 100 BEATS</span>
+            <span id="rr100-count">11 / 100</span>
+          </div>
+          <svg viewBox="0 0 360 86" preserveAspectRatio="none" id="rr-spark-svg">
+            <defs>
+              <linearGradient id="rr-fill" x1="0" x2="0" y1="0" y2="1">
+                <stop offset="0%" stop-color="#2dd4bf" stop-opacity="0.30"/>
+                <stop offset="100%" stop-color="#2dd4bf" stop-opacity="0"/>
+              </linearGradient>
+            </defs>
+            <line x1="0" y1="22" x2="360" y2="22" stroke="#1b2336" stroke-width="1"/>
+            <line x1="0" y1="43" x2="360" y2="43" stroke="#11172a" stroke-width="1"/>
+            <line x1="0" y1="64" x2="360" y2="64" stroke="#1b2336" stroke-width="1"/>
+            <path id="rr-area" fill="url(#rr-fill)" d=""/>
+            <path id="rr-line" fill="none" stroke="#2dd4bf" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" d=""/>
+            <circle id="rr-dot-glow" r="5" fill="#2dd4bf" fill-opacity="0.3"/>
+            <circle id="rr-dot"      r="2.5" fill="#2dd4bf"/>
+          </svg>
+          <div class="triplet">
+            <div><div class="label">MIN</div><div class="val" id="rr-min">781ms</div></div>
+            <div class="mean"><div class="label">MEAN</div><div class="val" id="rr-mean">867ms</div></div>
+            <div><div class="label">MAX</div><div class="val" id="rr-max">988ms</div></div>
+          </div>
+        </div>
+
+        <div class="ph-stop">▢  Stop streaming</div>
+      </div>
+    </div>
+  </div>
+</header>
+
+<main>
+
+<!-- ============================================== -->
+<section id="what">
+  <div class="container">
+    <div class="grid">
+      <div class="col-body">
+        <div class="pre-numeral"><span class="index">00</span><span>What it does</span><span class="rule"></span></div>
+        <h2>One job: forward your pulse, faithfully.</h2>
+        <p>
+          The Python and Rust references at <code>HRBand-LSL</code> already
+          do this on the desktop. RRStreamer is the Android sibling: same
+          discovery flow, same parser, same on-the-wire stream contract —
+          ported to a phone so a participant can wear the band and walk
+          around without trailing a USB cable.
+        </p>
+        <p>
+          <strong>Any band that implements the standard BLE Heart Rate
+          service (<code>0x180D</code>) works</strong> — Polar OH1, Wahoo
+          TICKR, Garmin HRM-Pro, Suunto, Coospo, Decathlon and others all
+          speak the same characteristic. We calibrated and verified against
+          a <strong>Polar H10</strong> because it's the de-facto reference
+          for accuracy and R-R quality, but nothing in the code is
+          H10-specific.
+        </p>
+        <p>
+          The contract below is <strong>load-bearing</strong>. Existing
+          <code>pylsl</code> resolvers and LabRecorder configurations match
+          on the literal stream name and source ID.
+        </p>
+
+        <table class="spec">
+          <thead>
+            <tr>
+              <th>Outlet</th>
+              <th>Stream Name</th>
+              <th>Type</th>
+              <th>Format</th>
+              <th>Source ID</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td class="tag-hr">HR</td>
+              <td><code>HR &lt;devicename&gt;</code></td>
+              <td>Markers <span class="muted">/ 1ch / irregular</span></td>
+              <td>int32</td>
+              <td><code>HR_markers_&lt;devicename&gt;</code></td>
+            </tr>
+            <tr>
+              <td class="tag-rr">RR</td>
+              <td><code>RR &lt;devicename&gt;</code></td>
+              <td>Markers <span class="muted">/ 1ch / irregular</span></td>
+              <td>int32</td>
+              <td><code>RR_markers_&lt;devicename&gt;</code></td>
+            </tr>
+          </tbody>
+        </table>
+        <p>
+          R-R intervals are pushed as <strong>milliseconds (rounded int)</strong>.
+          BLE bands report them in 1/1024-s units per the Heart Rate
+          Measurement spec; we convert once at the parse boundary so every
+          downstream consumer — the UI, the RMSSD computation, and the LSL
+          outlet — speaks the same units. This is a deliberate divergence
+          from the Python and Rust references, which forward the raw value.
+        </p>
+      </div>
+      <aside class="marg">
+        <span class="label">Outlet topology</span>
+        Two LSL outlets per device. HR fires once per BLE notification (≈ 1 Hz).
+        RR fires zero, one, or several times per notification depending on
+        how many R-R intervals the Polar packed into that update.
+      </aside>
+    </div>
+  </div>
+</section>
+
+<!-- ============================================== -->
+<section id="screens">
+  <div class="container">
+    <div class="pre-numeral"><span class="index">01</span><span>The two screens</span><span class="rule"></span></div>
+    <h2>Pair, then watch your pulse stream.</h2>
+    <p style="max-width: 38rem; margin-bottom: 2.5rem;">
+      The whole app is two screens. <strong>Scan</strong> filters BLE
+      advertisers by the Heart Rate service UUID and the device-name rule
+      from the references. <strong>Streaming</strong> shows the live signal
+      and forwards every sample to LSL. Everything else — service lifecycle,
+      multicast lock, notification — happens in the background.
+    </p>
+
+    <div class="showcase">
+      <!-- Scan screen -->
+      <div>
+        <div class="phone">
+          <div class="ph-status">
+            <span>00:04</span>
+            <span>● ● ● 5G  100%</span>
+          </div>
+          <div class="ph-header">
+            <span class="brand-mark" aria-hidden="true">
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor">
+                <path d="M12 18 C 7 14 3 11 3 7 C 3 4.5 5 3 7 3 C 9 3 10.5 4 12 6 C 13.5 4 15 3 17 3 C 19 3 21 4.5 21 7 C 21 11 17 14 12 18 Z"/>
+              </svg>
+            </span>
+            <span class="text">RRSTREAMER</span>
+          </div>
+
+          <div style="padding: 28px 22px 24px;">
+            <h2 style="font-size: 28px; margin: 0 0 8px; line-height: 1.05; letter-spacing: -0.015em;">Pair a heart rate band.</h2>
+            <p style="font-size: 13px; line-height: 1.4; color: var(--text-soft); max-width: 32ch; margin: 0;">
+              Bands advertising the standard BLE Heart Rate service appear here. Tap to connect and start the LSL stream.
+            </p>
+          </div>
+
+          <div style="padding: 0 22px 14px; display: flex; align-items: center; justify-content: space-between;">
+            <div class="ph-pulse" style="margin: 0; font-size: 10px;">
+              <span class="ph-pulse-dot"></span>
+              <span>Scanning · 4s left</span>
+            </div>
+            <span style="background: var(--text); color: var(--bg); font-family: 'Fira Sans'; font-weight: 600; font-size: 12px; padding: 8px 18px; border-radius: 999px; letter-spacing: 0.04em;">Rescan</span>
+          </div>
+
+          <div style="padding: 0 22px 8px; display: flex; justify-content: space-between; font-family: 'Fira Code'; font-size: 9.5px; color: var(--text-faint); letter-spacing: 0.18em; text-transform: uppercase;">
+            <span>Discovered · 1</span><span>BLE 0x180D</span>
+          </div>
+
+          <div style="padding: 0 22px;">
+            <div style="background: var(--surface); border: 1px solid var(--rule); border-radius: 18px; padding: 12px 16px; display: grid; grid-template-columns: 38px 1fr auto; align-items: center; gap: 12px;">
+              <div style="width: 38px; height: 38px; background: rgba(244,63,94,0.08); border: 1px solid rgba(244,63,94,0.25); border-radius: 10px; display: grid; place-items: center; color: var(--hr);">
+                <svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor"><path d="M12 18 C 7 14 3 11 3 7 C 3 4.5 5 3 7 3 C 9 3 10.5 4 12 6 C 13.5 4 15 3 17 3 C 19 3 21 4.5 21 7 C 21 11 17 14 12 18 Z"/></svg>
+              </div>
+              <div>
+                <div style="font-family: 'Fira Sans'; font-weight: 600; font-size: 14px; color: var(--text);">Polar H10</div>
+                <div style="font-family: 'Fira Code'; font-size: 10px; color: var(--text-faint); margin-top: 2px; letter-spacing: 0.04em;">C8:28:E6:77:9D:0D</div>
+              </div>
+              <span style="font-family: 'Fira Code'; font-size: 9px; color: var(--signal); border: 1px solid var(--rule); padding: 4px 10px; border-radius: 999px; letter-spacing: 0.18em; text-transform: uppercase; background: var(--surface-2);">Connect</span>
+            </div>
+          </div>
+        </div>
+        <div class="caption"><strong>Scan</strong> · BleScanner.scan() filtered by 0x180D</div>
+      </div>
+
+      <!-- Streaming screen reduced (different from hero — focused on the bottom card) -->
+      <div>
+        <div class="phone">
+          <div class="ph-status">
+            <span>00:04</span>
+            <span>● ● ● 5G  100%</span>
+          </div>
+          <div class="ph-header">
+            <span class="brand-mark" aria-hidden="true">
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor">
+                <path d="M12 18 C 7 14 3 11 3 7 C 3 4.5 5 3 7 3 C 9 3 10.5 4 12 6 C 13.5 4 15 3 17 3 C 19 3 21 4.5 21 7 C 21 11 17 14 12 18 Z"/>
+              </svg>
+            </span>
+            <span class="text">RRSTREAMER<span class="sep"> · </span><span class="device">POLAR H10 · D6B5C724</span></span>
+          </div>
+          <div class="ph-pulse">
+            <span class="ph-pulse-dot"></span>
+            <span>Streaming · LSL Markers</span>
+          </div>
+
+          <div class="ph-hero">
+            <div class="head">
+              <span class="kind">HR</span>
+              <span class="meta">AVG 71</span>
+            </div>
+            <div class="num-row">
+              <svg class="heart" viewBox="0 0 24 24" fill="currentColor">
+                <path d="M12 18 C 7 14 3 11 3 7 C 3 4.5 5 3 7 3 C 9 3 10.5 4 12 6 C 13.5 4 15 3 17 3 C 19 3 21 4.5 21 7 C 21 11 17 14 12 18 Z"/>
+              </svg>
+              <span class="num">73</span>
+              <span class="unit">BPM</span>
+            </div>
+            <div class="spark">
+              <svg viewBox="0 0 360 56" preserveAspectRatio="none">
+                <line x1="0" y1="14" x2="360" y2="14" stroke="#1b2336" stroke-width="1"/>
+                <line x1="0" y1="28" x2="360" y2="28" stroke="#11172a" stroke-width="1"/>
+                <line x1="0" y1="42" x2="360" y2="42" stroke="#1b2336" stroke-width="1"/>
+                <path d="M0,32 L20,30 L40,33 L60,29 L80,28 L100,32 L120,35 L140,30 L160,27 L180,30 L200,33 L220,30 L240,27 L260,24 L280,25 L300,28 L320,30 L340,28 L360,24 L360,56 L0,56 Z" fill="url(#hr-fill)"/>
+                <path d="M0,32 L20,30 L40,33 L60,29 L80,28 L100,32 L120,35 L140,30 L160,27 L180,30 L200,33 L220,30 L240,27 L260,24 L280,25 L300,28 L320,30 L340,28 L360,24" fill="none" stroke="#f43f5e" stroke-width="2" stroke-linejoin="round"/>
+                <circle cx="360" cy="24" r="6" fill="#f43f5e" fill-opacity="0.3"/>
+                <circle cx="360" cy="24" r="3" fill="#f43f5e"/>
+              </svg>
+              <div class="axis"><span>−60s</span><span>now</span></div>
+            </div>
+          </div>
+
+          <div class="ph-stats">
+            <div class="ph-stat rr">
+              <div class="label">RR</div><div class="num">812</div><div class="unit">ms · last beat</div>
+            </div>
+            <div class="ph-stat">
+              <div class="label">RMSSD</div><div class="num">31</div><div class="unit">ms · last 30 beats</div>
+            </div>
+          </div>
+
+          <div class="ph-meta">
+            <div class="row"><span>STREAM</span><span>HR Polar H10 D…</span></div>
+            <div class="row"><span>UPTIME</span><span>02:14</span></div>
+            <div class="row"><span>SAMPLES</span><span>137</span></div>
+            <div class="row"><span>BUFFER</span><span>100 / 100</span></div>
+          </div>
+
+          <div class="ph-rr100">
+            <div class="head">
+              <span><span class="label-rr">RR</span>· LAST 100 BEATS</span>
+              <span>100 / 100</span>
+            </div>
+            <svg viewBox="0 0 360 86" preserveAspectRatio="none">
+              <line x1="0" y1="22" x2="360" y2="22" stroke="#1b2336" stroke-width="1"/>
+              <line x1="0" y1="43" x2="360" y2="43" stroke="#11172a" stroke-width="1"/>
+              <line x1="0" y1="64" x2="360" y2="64" stroke="#1b2336" stroke-width="1"/>
+              <!-- Approx 100-pt RR sequence simulating natural HRV -->
+              <path d="M0,38 L4,44 L7,40 L11,52 L14,42 L18,46 L22,38 L25,32 L29,40 L32,44 L36,52 L40,46 L43,38 L47,30 L50,36 L54,42 L58,50 L61,46 L65,40 L68,34 L72,30 L76,38 L79,46 L83,52 L86,46 L90,40 L94,46 L97,52 L101,46 L104,40 L108,34 L112,30 L115,38 L119,44 L122,50 L126,42 L130,36 L133,30 L137,38 L140,46 L144,52 L148,44 L151,38 L155,32 L158,40 L162,48 L166,52 L169,44 L173,38 L176,30 L180,36 L184,44 L187,50 L191,46 L194,38 L198,32 L202,40 L205,46 L209,52 L212,44 L216,38 L220,30 L223,36 L227,42 L230,48 L234,40 L238,34 L241,28 L245,36 L248,42 L252,48 L256,40 L259,32 L263,28 L266,34 L270,40 L274,46 L277,38 L281,30 L284,28 L288,36 L292,42 L295,48 L299,40 L302,32 L306,36 L310,42 L313,48 L317,40 L320,32 L324,28 L327,34 L331,42 L334,46 L338,40 L342,32 L345,28 L349,34 L352,40 L356,44 L360,38 L360,86 L0,86 Z" fill="url(#rr-fill)"/>
+              <path d="M0,38 L4,44 L7,40 L11,52 L14,42 L18,46 L22,38 L25,32 L29,40 L32,44 L36,52 L40,46 L43,38 L47,30 L50,36 L54,42 L58,50 L61,46 L65,40 L68,34 L72,30 L76,38 L79,46 L83,52 L86,46 L90,40 L94,46 L97,52 L101,46 L104,40 L108,34 L112,30 L115,38 L119,44 L122,50 L126,42 L130,36 L133,30 L137,38 L140,46 L144,52 L148,44 L151,38 L155,32 L158,40 L162,48 L166,52 L169,44 L173,38 L176,30 L180,36 L184,44 L187,50 L191,46 L194,38 L198,32 L202,40 L205,46 L209,52 L212,44 L216,38 L220,30 L223,36 L227,42 L230,48 L234,40 L238,34 L241,28 L245,36 L248,42 L252,48 L256,40 L259,32 L263,28 L266,34 L270,40 L274,46 L277,38 L281,30 L284,28 L288,36 L292,42 L295,48 L299,40 L302,32 L306,36 L310,42 L313,48 L317,40 L320,32 L324,28 L327,34 L331,42 L334,46 L338,40 L342,32 L345,28 L349,34 L352,40 L356,44 L360,38" fill="none" stroke="#2dd4bf" stroke-width="1.6" stroke-linejoin="round"/>
+              <circle cx="360" cy="38" r="5" fill="#2dd4bf" fill-opacity="0.3"/>
+              <circle cx="360" cy="38" r="2.5" fill="#2dd4bf"/>
+            </svg>
+            <div class="triplet">
+              <div><div class="label">MIN</div><div class="val">766ms</div></div>
+              <div class="mean"><div class="label">MEAN</div><div class="val">847ms</div></div>
+              <div><div class="label">MAX</div><div class="val">939ms</div></div>
+            </div>
+          </div>
+
+          <div class="ph-stop">▢  Stop streaming</div>
+        </div>
+        <div class="caption"><strong>Streaming</strong> · HR sparkline + RR-100 ms graph</div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ============================================== -->
+<section id="architecture">
+  <div class="container">
+    <div class="grid">
+      <div class="col-body">
+        <div class="pre-numeral"><span class="index">02</span><span>Architecture</span><span class="rule"></span></div>
+        <h2>Three units, one job each.</h2>
+        <p>
+          A Compose UI shell, a foreground service that owns the GATT
+          connection and the LSL outlets together for the device's lifetime,
+          and a small set of pure parsers. Each unit can be reasoned about —
+          and tested — without the others.
+        </p>
+
+        <div class="arch" aria-label="Architecture diagram">
+          <svg viewBox="0 0 720 280" role="img">
+            <g transform="translate(20,40)">
+              <rect class="box box-accent" x="0" y="0" width="140" height="60" rx="6"/>
+              <text x="70" y="28" text-anchor="middle">Polar H10</text>
+              <text x="70" y="46" text-anchor="middle" class="lbl">BLE 0x2A37</text>
+            </g>
+            <g transform="translate(220,15)">
+              <rect class="box" x="0" y="0" width="180" height="55" rx="6"/>
+              <text x="90" y="28" text-anchor="middle">BleScanner</text>
+              <text x="90" y="46" text-anchor="middle" class="lbl">callbackFlow</text>
+            </g>
+            <g transform="translate(220,90)">
+              <rect class="box box-accent" x="0" y="0" width="180" height="55" rx="6"/>
+              <text x="90" y="28" text-anchor="middle">HeartRateClient</text>
+              <text x="90" y="46" text-anchor="middle" class="lbl">GATT subscribe</text>
+            </g>
+            <g transform="translate(220,165)">
+              <rect class="box" x="0" y="0" width="180" height="55" rx="6"/>
+              <text x="90" y="28" text-anchor="middle">HeartRateParser</text>
+              <text x="90" y="46" text-anchor="middle" class="lbl">pure / 0x2A37 → ms</text>
+            </g>
+            <g transform="translate(450,40)">
+              <rect class="box box-signal" x="0" y="0" width="190" height="180" rx="6"/>
+              <text x="95" y="28" text-anchor="middle">HeartRateService</text>
+              <text x="95" y="46" text-anchor="middle" class="lbl">foreground · CONNECTED_DEVICE</text>
+              <rect class="box" x="20" y="68" width="150" height="42" rx="4"/>
+              <text x="95" y="86" text-anchor="middle">LslHeartRateStreamer</text>
+              <text x="95" y="100" text-anchor="middle" class="lbl">edu.ucsd.sccn.LSL</text>
+              <rect class="box" x="20" y="120" width="150" height="42" rx="4"/>
+              <text x="95" y="138" text-anchor="middle">MulticastLock</text>
+              <text x="95" y="152" text-anchor="middle" class="lbl">Wi-Fi · "rrstreamer-lsl"</text>
+            </g>
+            <g transform="translate(680,90)">
+              <text x="0" y="-50" text-anchor="end" class="lbl">network</text>
+              <text x="0" y="0" text-anchor="end">pylsl</text>
+              <text x="0" y="18" text-anchor="end">LabRecorder</text>
+              <text x="0" y="36" text-anchor="end">… any LSL inlet</text>
+            </g>
+
+            <path class="arr-accent" d="M160 70 C 190 70, 190 117, 220 117"/>
+            <polygon class="head-accent" points="220,117 213,113 213,121"/>
+            <path class="arr"        d="M160 60 C 190 60, 190 42, 220 42"/>
+            <polygon class="head"    points="220,42 213,38 213,46"/>
+            <path class="arr"        d="M310 145 C 310 160, 310 165, 310 165"/>
+            <polygon class="head"    points="310,165 306,158 314,158"/>
+            <path class="arr-active" d="M400 117 C 425 117, 425 92, 450 92"/>
+            <polygon class="head-active" points="450,92 443,88 443,96"/>
+            <path class="arr-active" d="M640 130 C 665 130, 665 130, 685 130"/>
+            <polygon class="head-active" points="685,130 678,126 678,134"/>
+
+            <g transform="translate(20, 240)">
+              <rect class="box box-accent" x="0" y="0" width="14" height="10"/>
+              <text x="22" y="9" class="lbl">BLE side</text>
+              <rect class="box box-signal" x="100" y="0" width="14" height="10"/>
+              <text x="122" y="9" class="lbl">LSL side</text>
+              <line class="arr" x1="200" y1="5" x2="230" y2="5"/>
+              <text x="240" y="9" class="lbl">discovery</text>
+              <line class="arr-active" x1="320" y1="5" x2="350" y2="5"/>
+              <text x="360" y="9" class="lbl">data path</text>
+            </g>
+          </svg>
+        </div>
+        <p>
+          The service is foreground-typed so the GATT link survives the
+          screen turning off — the Polar H10 holds the connection
+          exclusively, and any unbound GATT would die with the activity.
+          The same service holds a non-reference-counted Wi-Fi multicast
+          lock so a fresh <code>pylsl resolve_streams()</code> from another
+          machine actually reaches the announcement.
+        </p>
+      </div>
+      <aside class="marg">
+        <span class="label">Why a service</span>
+        Polar's link is exclusive. If the activity dropped the connection,
+        any other app trying to reconnect would see the dongle held by no
+        one — for tens of seconds — and refuse.
+        <br><br>
+        <span class="label">Threading note</span>
+        BLE notifications arrive on a binder thread. <code>handleSample</code>
+        uses an atomic <code>StateFlow.update {}</code> so a transition
+        from another thread can never silently overwrite a sample increment.
+      </aside>
+    </div>
+  </div>
+</section>
+
+<!-- ============================================== -->
+<section id="build">
+  <div class="container">
+    <div class="grid">
+      <div class="col-body">
+        <div class="pre-numeral"><span class="index">03</span><span>Build &amp; run</span><span class="rule"></span></div>
+        <h2>Three commands. Nix carries the rest.</h2>
+        <p>
+          The flake provisions JDK&nbsp;17, Gradle&nbsp;8, the Android
+          SDK&nbsp;34 + NDK&nbsp;26, <code>adb</code>, and a Python with
+          <code>pylsl</code> installed. The vendored
+          <code>liblsl.so</code> per-ABI is fetched from
+          <em>mvidaldp/liblsl-android-builder&nbsp;v1.16.2</em> and pinned
+          by SHA-256.
+        </p>
+
+<pre><code><span style="color: var(--text-faint)"># Drop into the toolchain shell</span>
+nix develop
+
+<span style="color: var(--text-faint)"># Build, install on the connected device, launch, tail logcat</span>
+nix run
+
+<span style="color: var(--text-faint)"># Just the APK (ends up under app/build/outputs/apk/release/)</span>
+nix run .#build
+
+<span style="color: var(--text-faint)"># Verify the LSL stream from another host on the same network</span>
+nix develop --command python3 scripts/verify_lsl.py</code></pre>
+
+        <p>
+          <code>nix build</code> works without flags but emits
+          <em>wrapper scripts</em> rather than the APK itself — Gradle
+          fetches Maven dependencies during the build, which a pure Nix
+          derivation can't do without opting into the
+          <code>impure-derivations</code> experimental feature. Running
+          <code>./result/bin/rrstreamer-build</code> after
+          <code>nix build</code> drops the APK in the usual Gradle path.
+        </p>
+
+        <blockquote>
+          The native libs come from a Nix store path. Gradle reads
+          <code>RRSTREAMER_LSL_JNILIBS</code>, calls <code>setSrcDirs()</code>,
+          and the source tree never gets mutated by the build.
+          <cite>flake.nix · app/build.gradle.kts</cite>
+        </blockquote>
+      </div>
+      <aside class="marg">
+        <span class="label">LSL bridge</span>
+        Java bindings (<code>edu.ucsd.sccn.LSL</code>) are vendored from
+        <code>liblsl-Java</code>. The JNA Android AAR supplies
+        <code>libjnidispatch.so</code>; the flake supplies
+        <code>liblsl.so</code>. AGP <code>pickFirsts</code> dedupes the
+        per-ABI overlap.
+        <br><br>
+        <span class="label">First run</span>
+        Roughly 1.5&nbsp;GB of SDK + NDK fetched on cold cache; a few
+        seconds thereafter.
+      </aside>
+    </div>
+  </div>
+</section>
+
+<!-- ============================================== -->
+<section id="story">
+  <div class="container">
+    <div class="grid">
+      <div class="col-body">
+        <div class="pre-numeral"><span class="index">04</span><span>How it was built</span><span class="rule"></span></div>
+        <h2>Zero to streaming, then refined.</h2>
+        <p>
+          The project went from an empty directory to a working end-to-end
+          LSL stream in a single session, then through a UI redesign driven
+          by the <code>ui-ux-pro-max</code> design intelligence skill. Every
+          step lives as a separate commit on <code>main</code>.
+        </p>
+
+        <ol class="timeline">
+          <li>
+            <span class="when">801d867</span>
+            <div class="what">
+              <h4>Initial Android client</h4>
+              <p>
+                Compose UI, foreground service, BLE scanner, HR/RR parser,
+                LSL streamer, and the flake. First successful deploy to a
+                Polar H10 with <code>pylsl</code> reading the stream over Wi-Fi.
+              </p>
+            </div>
+          </li>
+          <li>
+            <span class="when">af470c7</span>
+            <div class="what">
+              <h4>Hardening pass</h4>
+              <p>
+                Closed real bugs found in code review: GATT leaks on error
+                paths, race in <code>StateFlow</code> updates, broken vendored
+                <code>LSL.java</code> constructors, missing Wi-Fi multicast
+                lock. Promoted state to a <code>ViewModel</code>; moved the
+                device-name filter into the scan flow.
+              </p>
+            </div>
+          </li>
+          <li>
+            <span class="when">841986b</span>
+            <div class="what">
+              <h4>UI redesign — dashboard typography</h4>
+              <p>
+                Applied the <code>ui-ux-pro-max</code> "Real-Time Operations"
+                pattern: Fira Code + Fira Sans, dark-OLED palette, beating
+                heart icon synced to the actual sample rate, live HR
+                sparkline, RMSSD card, mono metadata strip.
+              </p>
+            </div>
+          </li>
+          <li>
+            <span class="when">c3e5bcd</span>
+            <div class="what">
+              <h4>RR in milliseconds + 100-beat graph</h4>
+              <p>
+                R-R intervals converted to ms at the parse boundary so the
+                whole pipeline (UI, RMSSD, LSL outlet) speaks the same units.
+                New rolling 100-beat RR card with min / mean / max strip.
+              </p>
+            </div>
+          </li>
+        </ol>
+      </div>
+      <aside class="marg">
+        <span class="label">Verification habit</span>
+        Every Android-side change ends with an
+        <code>adb&nbsp;logcat</code> tail and a <code>screencap</code> read
+        back into context — no claim of "works" without an artifact to
+        point at.
+      </aside>
+    </div>
+  </div>
+</section>
+
+<!-- ============================================== -->
+<section id="hardware">
+  <div class="container">
+    <div class="grid">
+      <div class="col-body">
+        <div class="pre-numeral"><span class="index">05</span><span>Verified configuration</span><span class="rule"></span></div>
+        <h2>What we ran it against.</h2>
+        <p>
+          Every change was confirmed live on the device below, with a
+          <code>pylsl</code> resolver on a separate host on the same Wi-Fi
+          network reading the announced streams.
+        </p>
+
+        <div class="hw">
+          <div class="hw-card">
+            <div class="key">Test Sensor</div>
+            <div class="val">Polar H10</div>
+            <div class="sub">D6B5C724 · any 0x180D band works</div>
+          </div>
+          <div class="hw-card">
+            <div class="key">Phone</div>
+            <div class="val">Android 15</div>
+            <div class="sub">API 35 · ARM64</div>
+          </div>
+          <div class="hw-card">
+            <div class="key">Toolchain</div>
+            <div class="val">Kotlin 2.0.20</div>
+            <div class="sub">AGP 8.5 · JDK 17 · Gradle 8.7</div>
+          </div>
+          <div class="hw-card">
+            <div class="key">liblsl</div>
+            <div class="val">v1.16.2</div>
+            <div class="sub">arm64-v8a · armeabi-v7a · x86 · x86_64</div>
+          </div>
+          <div class="hw-card">
+            <div class="key">Receiver</div>
+            <div class="val">pylsl 1.18</div>
+            <div class="sub">resolve · pull_sample · same Wi-Fi</div>
+          </div>
+          <div class="hw-card">
+            <div class="key">UI</div>
+            <div class="val">Compose</div>
+            <div class="sub">Material 3 · BOM 2024.09 · Fira</div>
+          </div>
+        </div>
+      </div>
+      <aside class="marg">
+        <span class="label">Reproducing</span>
+        Any Android-8+ phone with a BLE radio should work; the
+        <code>flake.nix</code> targets all four ABIs so the same APK
+        runs on emulators too.
+        <br><br>
+        <span class="label">Sensor compatibility</span>
+        The H10 is the calibration target — chosen for its R-R interval
+        quality, not because it's special. Polar OH1, Wahoo TICKR, Garmin
+        HRM-Pro, Coospo, Decathlon Kalenji, Suunto Smart Sensor, and any
+        other band advertising the standard BLE Heart Rate service
+        (<code>0x180D</code>) is discoverable in the scan list and will
+        stream HR + RR through the same code path.
+      </aside>
+    </div>
+  </div>
+</section>
+
+</main>
+
+<footer>
+  <div class="container">
+    <span>RRStreamer · <a href="https://github.com/abcsds/RRStreamer" style="color: inherit; border-bottom-color: color-mix(in srgb, var(--text-faint) 35%, transparent);">github.com/abcsds/RRStreamer</a></span>
+    <span>Alberto Barradas</span>
+    <span>MIT License</span>
+  </div>
+</footer>
+
+<script>
+  // ---- Hero data simulator: HR sparkline + RR-100 graph + RMSSD ----
+  (function () {
+    const heroHr      = document.getElementById("hero-hr");
+    const heroRr      = document.getElementById("hero-rr");
+    const heroAvg     = document.getElementById("hero-avg");
+    const heroRmssd   = document.getElementById("hero-rmssd");
+    const heroSamples = document.getElementById("hero-samples");
+    const heroBuffer  = document.getElementById("hero-buffer");
+    const heroUptime  = document.getElementById("hero-uptime");
+    const rr100Count  = document.getElementById("rr100-count");
+    const rrMinEl     = document.getElementById("rr-min");
+    const rrMeanEl    = document.getElementById("rr-mean");
+    const rrMaxEl     = document.getElementById("rr-max");
+
+    const hrLine     = document.getElementById("hr-line");
+    const hrArea     = document.getElementById("hr-area");
+    const hrDot      = document.getElementById("hr-dot");
+    const hrDotGlow  = document.getElementById("hr-dot-glow");
+
+    const rrLine     = document.getElementById("rr-line");
+    const rrArea     = document.getElementById("rr-area");
+    const rrDot      = document.getElementById("rr-dot");
+    const rrDotGlow  = document.getElementById("rr-dot-glow");
+
+    if (!heroHr) return;
+
+    const HR_W = 360, HR_H = 56;
+    const RR_W = 360, RR_H = 86;
+
+    let bpm = 71;
+    let samples = 11;
+    const startedAt = Date.now() - 11 * 1000;
+    const hrHist = [];
+    const rrHist = [];
+
+    function pushHr(v) { hrHist.push(v); if (hrHist.length > 60) hrHist.shift(); }
+    function pushRr(v) { rrHist.push(v); if (rrHist.length > 100) rrHist.shift(); }
+
+    // Seed with a believable opening — last 11 beats around 70 bpm
+    for (let i = 0; i < 11; i++) {
+      const seedBpm = 69 + Math.round((Math.random() - 0.5) * 4);
+      pushHr(seedBpm);
+      pushRr(Math.round(60000 / seedBpm) + Math.round((Math.random() - 0.5) * 60));
+    }
+
+    function buildPath(values, w, h, area) {
+      if (values.length < 2) return area ? "" : "";
+      const lo = Math.min(...values);
+      const hi = Math.max(...values);
+      const span = Math.max(1, hi - lo);
+      const pad = Math.max(span * 0.25, 4);
+      const lo2 = lo - pad * 0.5;
+      const hi2 = hi + pad * 0.5;
+      const step = w / (values.length - 1);
+      let d = "";
+      values.forEach((v, i) => {
+        const x = (i * step).toFixed(2);
+        const norm = (v - lo2) / (hi2 - lo2);
+        const y = (h - norm * h).toFixed(2);
+        d += (i === 0 ? `M${x},${y}` : ` L${x},${y}`);
+      });
+      if (area) d += ` L${w.toFixed(2)},${h.toFixed(2)} L0,${h.toFixed(2)} Z`;
+      return d;
+    }
+
+    function lastY(values, w, h) {
+      const lo = Math.min(...values);
+      const hi = Math.max(...values);
+      const span = Math.max(1, hi - lo);
+      const pad = Math.max(span * 0.25, 4);
+      const lo2 = lo - pad * 0.5;
+      const hi2 = hi + pad * 0.5;
+      const v = values[values.length - 1];
+      return h - ((v - lo2) / (hi2 - lo2)) * h;
+    }
+
+    function tick() {
+      bpm += Math.round((Math.random() - 0.5) * 4);
+      bpm = Math.max(58, Math.min(102, bpm));
+      const noise = Math.round((Math.random() - 0.5) * 60);
+      const rrMs = Math.round(60000 / bpm) + noise;
+
+      pushHr(bpm);
+      pushRr(rrMs);
+      samples += 1;
+
+      // HR
+      heroHr.textContent = bpm;
+      const avg = Math.round(hrHist.slice(-15).reduce((a, b) => a + b, 0) / Math.min(15, hrHist.length));
+      heroAvg.textContent = `AVG ${avg}`;
+      hrLine.setAttribute("d", buildPath(hrHist, HR_W, HR_H, false));
+      hrArea.setAttribute("d", buildPath(hrHist, HR_W, HR_H, true));
+      const hrY = lastY(hrHist, HR_W, HR_H);
+      hrDot.setAttribute("cx", HR_W); hrDot.setAttribute("cy", hrY);
+      hrDotGlow.setAttribute("cx", HR_W); hrDotGlow.setAttribute("cy", hrY);
+
+      // RR
+      heroRr.textContent = rrMs;
+      rrLine.setAttribute("d", buildPath(rrHist, RR_W, RR_H, false));
+      rrArea.setAttribute("d", buildPath(rrHist, RR_W, RR_H, true));
+      const rrY = lastY(rrHist, RR_W, RR_H);
+      rrDot.setAttribute("cx", RR_W); rrDot.setAttribute("cy", rrY);
+      rrDotGlow.setAttribute("cx", RR_W); rrDotGlow.setAttribute("cy", rrY);
+
+      // RMSSD over the trailing 30 RR
+      const window = rrHist.slice(-30);
+      if (window.length >= 5) {
+        let sumSq = 0;
+        for (let i = 1; i < window.length; i++) {
+          const d = window[i] - window[i - 1];
+          sumSq += d * d;
+        }
+        heroRmssd.textContent = Math.round(Math.sqrt(sumSq / (window.length - 1)));
+      }
+
+      // Min/Mean/Max
+      const lo = Math.min(...rrHist);
+      const hi = Math.max(...rrHist);
+      const mean = Math.round(rrHist.reduce((a, b) => a + b, 0) / rrHist.length);
+      rrMinEl.textContent  = `${lo}ms`;
+      rrMeanEl.textContent = `${mean}ms`;
+      rrMaxEl.textContent  = `${hi}ms`;
+
+      // Meta
+      heroSamples.textContent = samples;
+      heroBuffer.textContent  = `${rrHist.length} / 100`;
+      rr100Count.textContent  = `${rrHist.length} / 100`;
+      const elapsed = Math.floor((Date.now() - startedAt) / 1000);
+      heroUptime.textContent = `${String(Math.floor(elapsed / 60)).padStart(2, "0")}:${String(elapsed % 60).padStart(2, "0")}`;
+    }
+
+    tick();
+    setInterval(tick, 950);
+  })();
+
+  // Scroll progress bar
+  (function () {
+    const bar = document.getElementById("progress");
+    if (!bar) return;
+    function onScroll() {
+      const h = document.documentElement;
+      const max = h.scrollHeight - h.clientHeight;
+      const pct = max > 0 ? (h.scrollTop / max) * 100 : 0;
+      bar.style.width = pct + "%";
+    }
+    document.addEventListener("scroll", onScroll, { passive: true });
+    onScroll();
+  })();
+</script>
+</body>
+</html>

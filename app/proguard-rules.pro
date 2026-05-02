@@ -1,0 +1,3 @@
+-keep class com.sun.jna.** { *; }
+-keep class * extends com.sun.jna.** { *; }
+-keep class edu.ucsd.sccn.** { *; }

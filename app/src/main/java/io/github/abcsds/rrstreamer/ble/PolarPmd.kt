@@ -77,6 +77,48 @@ object PolarPmd {
         return out
     }
 
+    /**
+     * Parse a PMD Control Point response indication. Layout:
+     *   [0] = 0xF0 (response opcode)
+     *   [1] = original op code (0x02 = START, 0x03 = STOP, ...)
+     *   [2] = measurement type (0x03 = PPI)
+     *   [3] = error code (0 = SUCCESS; 3 = NOT_SUPPORTED; others below)
+     *   [4..] optional parameter frame (only on SUCCESS)
+     *
+     * Returns null when the frame isn't a CP response we understand;
+     * the caller should ignore those.
+     */
+    fun parseCpResponse(data: ByteArray): CpResponse? {
+        if (data.size < 4 || data[0] != CP_RESPONSE_OPCODE) return null
+        return CpResponse(
+            opCode = data[1],
+            measurementType = data[2],
+            errorCode = data[3].toInt() and 0xFF,
+        )
+    }
+
+    data class CpResponse(val opCode: Byte, val measurementType: Byte, val errorCode: Int) {
+        val isSuccess: Boolean get() = errorCode == 0
+        val errorName: String get() = ERROR_NAMES[errorCode] ?: "ERR_$errorCode"
+    }
+
     private const val HEADER_SIZE = 10
     private const val SAMPLE_SIZE = 6
+    private const val CP_RESPONSE_OPCODE: Byte = 0xF0.toByte()
+
+    // Subset of Polar PMD error codes we surface in logs; others fall back to
+    // "ERR_<code>" via [CpResponse.errorName]. From polar-ble-sdk PmdControlPoint.
+    private val ERROR_NAMES = mapOf(
+        0 to "SUCCESS",
+        1 to "INVALID_OP_CODE",
+        2 to "INVALID_MEASUREMENT_TYPE",
+        3 to "NOT_SUPPORTED",
+        4 to "INVALID_LENGTH",
+        5 to "INVALID_PARAMETER",
+        6 to "ALREADY_IN_STATE",
+        7 to "INVALID_RESOLUTION",
+        8 to "INVALID_SAMPLE_RATE",
+        9 to "INVALID_RANGE",
+        10 to "INVALID_MTU",
+    )
 }

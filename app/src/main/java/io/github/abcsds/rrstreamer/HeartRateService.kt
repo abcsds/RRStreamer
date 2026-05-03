@@ -18,6 +18,7 @@ import android.util.Log
 import io.github.abcsds.rrstreamer.ble.HeartRateClient
 import io.github.abcsds.rrstreamer.ble.HeartRateMeasurement
 import io.github.abcsds.rrstreamer.ble.IntervalKind
+import io.github.abcsds.rrstreamer.io.IntervalLogger
 import io.github.abcsds.rrstreamer.lsl.LslHeartRateStreamer
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -37,8 +38,34 @@ class HeartRateService : Service() {
 
     private val binder = LocalBinder()
     private var client: HeartRateClient? = null
-    private var streamer: LslHeartRateStreamer? = null
+    @Volatile private var streamer: LslHeartRateStreamer? = null
+    // Read on the BLE binder thread (`handleSample`) and written on the main
+    // thread (`stop`, `onDestroy`, BLE state callbacks). `@Volatile` gives the
+    // BLE thread a guaranteed-fresh view; the close-and-null helper below is
+    // the only writer pattern, so a snapshot in `handleSample` either sees a
+    // live writer or null — never a half-closed one.
+    @Volatile private var logger: IntervalLogger? = null
+    @Volatile private var loggingRequested: Boolean = false
     private var sanitisedDeviceName: String = "device"
+
+    private fun closeLoggerSafely() {
+        val l = logger
+        logger = null
+        l?.close()
+    }
+
+    /**
+     * Tear down per-session resources so the next connect starts clean.
+     * Streamer is gated on `null` for the lazy first-sample init in
+     * [handleSample]; if we leave a stale instance after disconnect, the
+     * state transition to Streaming never re-fires and the UI stays on
+     * "Connecting…" forever.
+     */
+    private fun closeSessionResources() {
+        closeLoggerSafely()
+        streamer?.close()
+        streamer = null
+    }
     // LSL announces over multicast. Without an active multicast lock, modern
     // Android Wi-Fi stacks drop incoming multicast packets when the screen is
     // off, so a fresh `pylsl resolve_streams` from another machine times out.
@@ -86,8 +113,16 @@ class HeartRateService : Service() {
 
     @SuppressLint("MissingPermission")
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
+        // The activity binds with BIND_AUTO_CREATE, so the service instance can
+        // outlive a stop()+stopSelf(). When the next startForegroundService()
+        // arrives, onCreate does NOT re-run, and Android's 5-second watchdog
+        // fires for the unfulfilled startForeground promise. Re-asserting it
+        // here every command is idempotent and keeps the contract honest.
+        startForeground(NOTIF_ID, buildNotification("Connecting…"))
+
         val address = intent?.getStringExtra(EXTRA_DEVICE_ADDRESS)
         val name = intent?.getStringExtra(EXTRA_DEVICE_NAME) ?: "device"
+        loggingRequested = intent?.getBooleanExtra(EXTRA_LOG_INTERVALS, false) ?: false
         if (address == null) {
             Log.e(TAG, "Missing EXTRA_DEVICE_ADDRESS"); stopSelf(); return START_NOT_STICKY
         }
@@ -113,10 +148,17 @@ class HeartRateService : Service() {
                         updateNotification("Listening to $name…")
                     }
                     HeartRateClient.State.Disconnected -> {
+                        // Close per-session state so a reconnect-without-stop
+                        // opens a fresh log file AND a fresh streamer; without
+                        // tearing down the streamer the lazy first-sample init
+                        // in handleSample skips the state transition and the UI
+                        // stays in Connecting forever.
+                        closeSessionResources()
                         _state.value = StreamingState.Disconnected(name)
                         updateNotification("Disconnected from $name")
                     }
                     HeartRateClient.State.Error -> {
+                        closeSessionResources()
                         _state.value = StreamingState.Error("BLE error")
                         updateNotification("BLE error")
                     }
@@ -157,8 +199,21 @@ class HeartRateService : Service() {
             updateNotification("$sanitisedDeviceName · streaming ${m.intervalKind.label}")
         }
 
+        // Lazy-open the local log on the same first sample, so the file's
+        // existence and the LSL outlet's appearance line up. Logger failures
+        // are non-fatal — a missing SD card must not break streaming.
+        if (loggingRequested && logger == null) {
+            logger = IntervalLogger.open(this, m.intervalKind)?.also {
+                Log.i(TAG, "Local fallback log: ${it.path}")
+            }
+        }
+
         s.pushHr(m.heartRateBpm)
-        m.intervalsMs.forEach { s.pushInterval(it) }
+        val log = logger
+        m.intervalsMs.forEach { ms ->
+            s.pushInterval(ms)
+            log?.append(ms)
+        }
 
         // Atomic update — handleSample runs on the GATT binder thread, and stop()
         // / state transitions can land on other threads, so a plain
@@ -206,6 +261,8 @@ class HeartRateService : Service() {
     fun stop() {
         client?.close(); client = null
         streamer?.close(); streamer = null
+        closeLoggerSafely()
+        loggingRequested = false
         _state.value = StreamingState.Idle
         releaseMulticastLock()
         stopForeground(STOP_FOREGROUND_REMOVE)
@@ -215,6 +272,7 @@ class HeartRateService : Service() {
     override fun onDestroy() {
         client?.close(); client = null
         streamer?.close(); streamer = null
+        closeLoggerSafely()
         releaseMulticastLock()
         super.onDestroy()
     }
@@ -269,11 +327,18 @@ class HeartRateService : Service() {
 
         const val EXTRA_DEVICE_ADDRESS = "device_address"
         const val EXTRA_DEVICE_NAME = "device_name"
+        const val EXTRA_LOG_INTERVALS = "log_intervals"
 
-        fun start(context: Context, address: String, name: String) {
+        fun start(
+            context: Context,
+            address: String,
+            name: String,
+            logIntervals: Boolean = false,
+        ) {
             val intent = Intent(context, HeartRateService::class.java)
                 .putExtra(EXTRA_DEVICE_ADDRESS, address)
                 .putExtra(EXTRA_DEVICE_NAME, name)
+                .putExtra(EXTRA_LOG_INTERVALS, logIntervals)
             context.startForegroundService(intent)
         }
     }

@@ -103,7 +103,10 @@ class MainActivity : ComponentActivity() {
                             permissionLauncher.launch(requiredPermissions().toTypedArray())
                         },
                         onPickDevice = { dev, displayName ->
-                            HeartRateService.start(this, dev.address, displayName)
+                            HeartRateService.start(
+                                this, dev.address, displayName,
+                                logIntervals = state.logToFile.value,
+                            )
                         },
                         onStop = { bound?.stop() },
                     )
@@ -147,6 +150,9 @@ class AppState : ViewModel() {
     val scanning = MutableStateFlow(false)
     val devices = MutableStateFlow<List<BluetoothDevice>>(emptyList())
     val streaming = MutableStateFlow<StreamingState>(StreamingState.Idle)
+    // Captured at device-pick time and shipped to the service via intent extra.
+    // Off by default — opt in per session.
+    val logToFile = MutableStateFlow(false)
 }
 
 @Composable
@@ -162,6 +168,7 @@ private fun AppRoot(
     val scanning by state.scanning.collectAsState()
     val devices by state.devices.collectAsState()
     val streaming by state.streaming.collectAsState()
+    val logToFile by state.logToFile.collectAsState()
     var error by remember { mutableStateOf<String?>(null) }
 
     if (!permitted) {
@@ -184,6 +191,8 @@ private fun AppRoot(
                 devices = devices,
                 scanning = scanning,
                 error = error ?: banner,
+                logEnabled = logToFile,
+                onToggleLog = { state.logToFile.value = it },
                 onScan = {
                     if (state.scanning.value) return@ScanScreen
                     state.scanning.value = true

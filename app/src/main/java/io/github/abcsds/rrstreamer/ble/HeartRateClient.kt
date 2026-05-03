@@ -46,6 +46,13 @@ class HeartRateClient(
 
     private var gatt: BluetoothGatt? = null
     private var mode: Mode = Mode.Initial
+    // Counts HR-only 0x2A37 frames while we're still in Mode.Initial. Some
+    // ECG bands (notably the Polar H10 just after a reconnect) send a HR-only
+    // frame before they've computed the first R-R interval; committing to
+    // PolarPpi on that single frame strands us waiting for PPI from a band
+    // that doesn't produce it. Wait `HR_ONLY_DECISION_WINDOW` frames before
+    // falling back to PMD.
+    private var hrOnlyFrames: Int = 0
 
     @SuppressLint("MissingPermission")
     fun connect() {
@@ -210,36 +217,52 @@ class HeartRateClient(
         when (uuid) {
             HR_MEASUREMENT_UUID -> handleStandardHrFrame(g, value)
             POLAR_PMD_DATA_UUID -> handlePmdDataFrame(value)
-            POLAR_PMD_CP_UUID   -> Log.d(TAG, "PMD CP indication: ${value.toHexShort()}")
+            POLAR_PMD_CP_UUID   -> handlePmdCpResponse(value)
+        }
+    }
+
+    private fun handlePmdCpResponse(value: ByteArray) {
+        Log.d(TAG, "PMD CP indication: ${value.toHexShort()}")
+        val resp = PolarPmd.parseCpResponse(value) ?: return
+        // The H10 exposes the PMD service but answers START_PPI with
+        // NOT_SUPPORTED. Without this, we'd sit in Connecting forever waiting
+        // for PPI frames the band will never produce.
+        if (!resp.isSuccess) {
+            fail("PMD ${resp.errorName} for op=0x${"%02x".format(resp.opCode)} type=0x${"%02x".format(resp.measurementType)}")
         }
     }
 
     @SuppressLint("MissingPermission")
     private fun handleStandardHrFrame(g: BluetoothGatt, value: ByteArray) {
-        // Only the FIRST 0x2A37 frame drives the protocol-selection decision.
         if (mode == Mode.Initial) {
             val rrAdvertised = HeartRateParser.hasRrIntervals(value)
             val pmdAvailable = g.getService(POLAR_PMD_SERVICE_UUID) != null
 
-            mode = when {
-                rrAdvertised -> Mode.StandardRr
-                pmdAvailable -> Mode.PolarPpi
-                else         -> Mode.HrOnly
-            }
-            Log.d(TAG, "Protocol selected: $mode (rrFlag=$rrAdvertised, pmd=$pmdAvailable)")
-
-            if (mode == Mode.PolarPpi) {
-                // Switch off the standard HR notifications and bring the PMD path online.
-                val service = g.getService(HR_SERVICE_UUID)
-                val hrCh = service?.getCharacteristic(HR_MEASUREMENT_UUID)
-                if (hrCh != null) {
-                    g.setCharacteristicNotification(hrCh, false)
+            when {
+                rrAdvertised -> {
+                    mode = Mode.StandardRr
+                    Log.d(TAG, "Protocol selected: StandardRr (RR seen on frame ${hrOnlyFrames + 1})")
                 }
-                if (!startPolarPpi(g)) {
-                    fail("Could not bring up Polar PMD/PPI subscription")
+                !pmdAvailable -> {
+                    // No PMD path possible — commit to standard. Future frames
+                    // may still carry RR (the parser handles either case); the
+                    // mode label only documents what we observed first.
+                    mode = Mode.HrOnly
+                    Log.d(TAG, "Protocol selected: HrOnly (no PMD service)")
                 }
-                // Drop this 0x2A37 frame; PPI will provide HR + PP from now on.
-                return
+                hrOnlyFrames + 1 < HR_ONLY_DECISION_WINDOW -> {
+                    hrOnlyFrames++
+                    Log.d(TAG, "Frame $hrOnlyFrames is HR-only; waiting up to $HR_ONLY_DECISION_WINDOW frames for RR before falling back to PMD")
+                    return
+                }
+                else -> {
+                    mode = Mode.PolarPpi
+                    Log.d(TAG, "Protocol selected: PolarPpi (no RR after $HR_ONLY_DECISION_WINDOW frames; PMD present)")
+                    val hrCh = g.getService(HR_SERVICE_UUID)?.getCharacteristic(HR_MEASUREMENT_UUID)
+                    if (hrCh != null) g.setCharacteristicNotification(hrCh, false)
+                    if (!startPolarPpi(g)) fail("Could not bring up Polar PMD/PPI subscription")
+                    return
+                }
             }
         }
 
@@ -340,5 +363,10 @@ class HeartRateClient(
         // rejects the start-PPI request with ERROR_INVALID_MTU on small MTUs.
         // 232 is the value used by Polar's own polar-ble-sdk.
         private const val REQUESTED_MTU = 232
+        // How many HR-only 0x2A37 frames we tolerate before falling back to
+        // PMD/PPI when the device exposes the PMD service. Three frames is
+        // enough for an ECG band that's still warming up after reconnect to
+        // emit at least one RR-bearing frame.
+        private const val HR_ONLY_DECISION_WINDOW = 3
     }
 }

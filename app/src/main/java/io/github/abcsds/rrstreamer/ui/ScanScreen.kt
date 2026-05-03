@@ -23,6 +23,8 @@ import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
+import androidx.compose.material3.Switch
+import androidx.compose.material3.SwitchDefaults
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
@@ -39,6 +41,8 @@ fun ScanScreen(
     devices: List<BluetoothDevice>,
     scanning: Boolean,
     error: String?,
+    logEnabled: Boolean,
+    onToggleLog: (Boolean) -> Unit,
     onScan: () -> Unit,
     onPick: (BluetoothDevice, String) -> Unit,
     modifier: Modifier = Modifier,
@@ -97,7 +101,12 @@ fun ScanScreen(
             }
         }
 
-        Spacer(Modifier.height(26.dp))
+        Spacer(Modifier.height(20.dp))
+
+        // ── Local log toggle ────────────────────────────────────
+        LogToggleCard(enabled = logEnabled, onToggle = onToggleLog)
+
+        Spacer(Modifier.height(20.dp))
 
         // ── Scan controls ───────────────────────────────────────
         Row(
@@ -235,6 +244,55 @@ private fun DeviceCard(name: String, address: String, onClick: () -> Unit) {
                 shape = RoundedCornerShape(18.dp),
                 contentPadding = androidx.compose.foundation.layout.PaddingValues(0.dp),
             ) { /* invisible — just absorbs the tap */ }
+        }
+    }
+}
+
+@Composable
+private fun LogToggleCard(enabled: Boolean, onToggle: (Boolean) -> Unit) {
+    Box(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(14.dp))
+            .background(Tokens.Surface)
+            .border(1.dp, Tokens.Rule, RoundedCornerShape(14.dp))
+            .padding(horizontal = 16.dp, vertical = 12.dp),
+    ) {
+        Row(
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(14.dp),
+            modifier = Modifier.fillMaxWidth(),
+        ) {
+            Column(modifier = Modifier.weight(1f)) {
+                Text(
+                    "Save intervals to file",
+                    style = MaterialTheme.typography.titleSmall.copy(
+                        color = Tokens.Text,
+                        fontWeight = FontWeight.Medium,
+                    ),
+                )
+                Spacer(Modifier.height(3.dp))
+                Text(
+                    "Fallback log if the LSL stream isn't recorded over the network. " +
+                        "One value per line, in ms.",
+                    style = MaterialTheme.typography.bodySmall.copy(
+                        color = Tokens.TextSoft,
+                        lineHeight = 16.sp,
+                    ),
+                )
+            }
+            Switch(
+                checked = enabled,
+                onCheckedChange = onToggle,
+                colors = SwitchDefaults.colors(
+                    checkedThumbColor = Tokens.Background,
+                    checkedTrackColor = Tokens.Signal,
+                    checkedBorderColor = Tokens.Signal,
+                    uncheckedThumbColor = Tokens.TextSoft,
+                    uncheckedTrackColor = Tokens.SurfaceElev,
+                    uncheckedBorderColor = Tokens.Rule,
+                ),
+            )
         }
     }
 }
